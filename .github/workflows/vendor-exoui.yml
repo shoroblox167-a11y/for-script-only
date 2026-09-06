@@ -1,28 +1,32 @@
 name: Vendor Exo UI
 
 on:
-  push:
+  issues:
+    types: [opened]
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   vendor:
+    if: startsWith(github.event.issue.title, 'FABLE_VENDOR_EXO_UI')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Vendor Exo UI
+      - name: Vendor exact Exo UI source
         run: |
           set -e
           curl -fsSL https://raw.githubusercontent.com/9kkinc-sudo/ui_lib/main/source.lua -o src/Fable_ExoUI.lua
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src/Fable_ExoUI.lua
-          if git diff --cached --quiet; then
-            echo 'Fable_ExoUI.lua already up to date.'
-            exit 0
-          fi
-          git commit -m 'Vendor exact Exo UI source'
-          git push
+          git commit -m 'Add bundled Exo UI source' || true
+          git push || true
+
+      - name: Close trigger issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue close ${{ github.event.issue.number }} --repo ${{ github.repository }} --comment 'Exo UI vendored into src/Fable_ExoUI.lua.'
