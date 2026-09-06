@@ -2,8 +2,6 @@ name: Vendor Exo UI
 
 on:
   push:
-    paths:
-      - '.github/workflows/vendor-exoui.yml'
 
 permissions:
   contents: write
@@ -26,5 +24,5 @@ jobs:
             echo 'Fable_ExoUI.lua already up to date.'
             exit 0
           fi
-          git commit -m 'Add bundled Exo UI source'
+          git commit -m 'Vendor exact Exo UI source'
           git push
