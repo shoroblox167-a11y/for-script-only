@@ -1,12 +1,12 @@
 -- FABLE • CANONICAL AUTOHATCH BASE
--- Uses the exact Exo UI source supplied as exoui(3).lua.
+-- Uses the exact Exo UI source vendored in this repository as Fable_ExoUI.lua.
 -- Only project title is changed to: Fable.
 
 repeat task.wait() until game:IsLoaded()
 
 local ENV = (type(getgenv) == "function" and getgenv()) or _G
 local BASE = "https://raw.githubusercontent.com/shoroblox167-a11y/for-script-only/main/src/"
-local EXO_UI_URL = "https://raw.githubusercontent.com/9kkinc-sudo/ui_lib/main/source.lua"
+local EXO_UI_URL = BASE .. "Fable_ExoUI.lua"
 
 -- Stop/unload the previous Fable instance on re-execution.
 pcall(function()
@@ -21,22 +21,21 @@ pcall(function()
     end
 end)
 
--- Load the exact Exo library used by the supplied exoui(3).lua.
+-- Load the exact Exo library vendored in this repository.
 local source = game:HttpGet(EXO_UI_URL)
 local factory, loadErr = loadstring(source)
 if not factory then
-    error(loadErr or "Failed to load Exo UI", 2)
+    error(loadErr or "Failed to load Fable_ExoUI.lua", 2)
 end
 
 local Library = factory()
 if type(Library) ~= "table" or type(Library.CreateWindow) ~= "function" then
-    error("Exo UI library loaded but CreateWindow is unavailable", 2)
+    error("Fable_ExoUI.lua loaded but CreateWindow is unavailable", 2)
 end
 
 ENV.Library = Library
 
--- Create the real Exo window FIRST. This means the UI itself can open even
--- if a later AutoHatch dependency has an issue.
+-- Create the real Exo window FIRST. The rest of AutoHatch reuses this exact window.
 local Window = Library:CreateWindow({
     Title = "Fable",
     Footer = "Fable",
@@ -54,8 +53,8 @@ local Window = Library:CreateWindow({
 
 ENV.FableAutoHatchWindow = Window
 
--- Fable_AutoHatch_Cycle_FINAL.lua already contains its own CreateWindow call.
--- Reuse this exact window instead of creating another one.
+-- Fable_AutoHatch_Cycle_FINAL.lua already calls CreateWindow.
+-- Return our already-created Exo window so it does not create a second UI.
 local OriginalCreateWindow = Library.CreateWindow
 Library.CreateWindow = function(self, info)
     return ENV.FableAutoHatchWindow or OriginalCreateWindow(self, info)
@@ -70,9 +69,9 @@ local function run(path)
     return fn()
 end
 
--- Existing verified AutoHatch implementation; its hatch logic is untouched.
+-- Existing verified AutoHatch implementation; hatch logic is not rewritten here.
 run("Fable_AutoHatch_Cycle_FINAL.lua")
 run("Fable_Simple_Live_Stats.lua")
 
-print("[FABLE] Exact Exo UI loaded.")
+print("[FABLE] Vendored Exo UI loaded from Fable_ExoUI.lua.")
 print("[FABLE] Window title: Fable")
