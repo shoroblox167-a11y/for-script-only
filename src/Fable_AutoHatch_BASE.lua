@@ -1,48 +1,49 @@
--- FABLE • UI BASE TEST
--- ============================================================
--- Uses the exact supplied Exo UI source (exoui(3).lua matches the
--- 9kkinc-sudo/ui_lib source used here).
--- This step intentionally tests ONLY the UI so we can verify the
--- window opens before attaching AutoHatch again.
---
--- UI title: Fable
--- No AutoHatch logic is changed here.
--- ============================================================
+-- FABLE • CANONICAL AUTOHATCH BASE
+-- Uses the exact Exo UI source supplied as exoui(3).lua.
+-- Only project title is changed to: Fable.
 
 repeat task.wait() until game:IsLoaded()
 
 local ENV = (type(getgenv) == "function" and getgenv()) or _G
-local UI_URL = "https://raw.githubusercontent.com/9kkinc-sudo/ui_lib/main/source.lua"
+local BASE = "https://raw.githubusercontent.com/shoroblox167-a11y/for-script-only/main/src/"
+local EXO_UI_URL = "https://raw.githubusercontent.com/9kkinc-sudo/ui_lib/main/source.lua"
 
--- Remove a previously loaded UI instance so re-execution always gets a
--- clean library instead of reusing a stale/destroyed Library table.
-if type(ENV.Library) == "table" and type(ENV.Library.Unload) == "function" then
-    pcall(function()
+-- Stop/unload the previous Fable instance on re-execution.
+pcall(function()
+    if type(ENV.FableAutoHatch) == "table" and type(ENV.FableAutoHatch.Stop) == "function" then
+        ENV.FableAutoHatch.Stop()
+    end
+end)
+
+pcall(function()
+    if type(ENV.Library) == "table" and type(ENV.Library.Unload) == "function" then
         ENV.Library:Unload()
-    end)
-end
-ENV.Library = nil
+    end
+end)
 
-local source = game:HttpGet(UI_URL)
-local loader, err = loadstring(source)
-if not loader then
-    error(err or "Exo UI source failed to compile", 2)
+-- Load the exact Exo library used by the supplied exoui(3).lua.
+local source = game:HttpGet(EXO_UI_URL)
+local factory, loadErr = loadstring(source)
+if not factory then
+    error(loadErr or "Failed to load Exo UI", 2)
 end
 
-local Library = loader()
+local Library = factory()
 if type(Library) ~= "table" or type(Library.CreateWindow) ~= "function" then
-    error("Exo UI library did not return a valid Library", 2)
+    error("Exo UI library loaded but CreateWindow is unavailable", 2)
 end
 
 ENV.Library = Library
 
+-- Create the real Exo window FIRST. This means the UI itself can open even
+-- if a later AutoHatch dependency has an issue.
 local Window = Library:CreateWindow({
     Title = "Fable",
     Footer = "Fable",
+    Size = UDim2.fromOffset(720, 600),
     AutoShow = true,
     Center = true,
     Resizable = true,
-    Size = UDim2.fromOffset(720, 600),
     SearchbarSize = UDim2.fromScale(1, 1),
     CornerRadius = 4,
     NotifySide = "Right",
@@ -51,17 +52,27 @@ local Window = Library:CreateWindow({
     MobileButtonsSide = "Left",
 })
 
-local Home = Window:AddTab({
-    Name = "Home",
-    Description = "Fable UI base test.",
-})
+ENV.FableAutoHatchWindow = Window
 
-local Left = Home:AddLeftGroupbox("Fable")
-Left:AddLabel({
-    Text = "Fable UI loaded successfully.",
-    DoesWrap = true,
-})
+-- Fable_AutoHatch_Cycle_FINAL.lua already contains its own CreateWindow call.
+-- Reuse this exact window instead of creating another one.
+local OriginalCreateWindow = Library.CreateWindow
+Library.CreateWindow = function(self, info)
+    return ENV.FableAutoHatchWindow or OriginalCreateWindow(self, info)
+end
 
-print("[FABLE] UI BASE TEST loaded.")
-print("[FABLE] Exact Exo UI source • title: Fable")
-print("[FABLE] AutoHatch logic is intentionally not loaded in this UI test.")
+local function run(path)
+    local body = game:HttpGet(BASE .. path)
+    local fn, err = loadstring(body)
+    if not fn then
+        error(err or ("Failed to load " .. path), 2)
+    end
+    return fn()
+end
+
+-- Existing verified AutoHatch implementation; its hatch logic is untouched.
+run("Fable_AutoHatch_Cycle_FINAL.lua")
+run("Fable_Simple_Live_Stats.lua")
+
+print("[FABLE] Exact Exo UI loaded.")
+print("[FABLE] Window title: Fable")
