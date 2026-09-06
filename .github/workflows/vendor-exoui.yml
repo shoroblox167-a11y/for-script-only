@@ -1,22 +1,23 @@
 name: Vendor Exo UI
 
 on:
-  issues:
+  pull_request:
     types: [opened]
 
 permissions:
   contents: write
-  issues: write
 
 jobs:
   vendor:
-    if: startsWith(github.event.issue.title, 'FABLE_VENDOR_EXO_UI')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout PR branch
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
 
-      - name: Vendor exact Exo UI source
+      - name: Vendor Exo UI
         run: |
           set -e
           curl -fsSL https://raw.githubusercontent.com/9kkinc-sudo/ui_lib/main/source.lua -o src/Fable_ExoUI.lua
@@ -24,9 +25,4 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src/Fable_ExoUI.lua
           git commit -m 'Add bundled Exo UI source' || true
-          git push || true
-
-      - name: Close trigger issue
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh issue close ${{ github.event.issue.number }} --repo ${{ github.repository }} --comment 'Exo UI vendored into src/Fable_ExoUI.lua.'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
