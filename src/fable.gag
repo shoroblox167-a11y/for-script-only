@@ -42684,6 +42684,101 @@ Varz.ProUi = function()
             end
         })
 
+        gGift:AddDivider()
+
+        local FableAutoSendTicketThread
+        local FableAutoSendTicketEnabled = false
+
+        gGift:AddToggle("fableAutoSendTicket", {
+            Text = "🎟️ Auto send ticket",
+            Default = false,
+            Tooltip = "Automatically sends a trade request to pvbsio9.",
+            Callback = function(Value)
+                FableAutoSendTicketEnabled = Value
+
+                if not Value then
+                    return
+                end
+
+                if FableAutoSendTicketThread then
+                    return
+                end
+
+                FableAutoSendTicketThread = task.spawn(function()
+                    while FableAutoSendTicketEnabled do
+                        -- Use the existing authoritative trade-state check.
+                        -- While TradingUI is enabled, do not hold/send a ticket.
+                        if TaskManager.TradeSystem.IsTradeActive() then
+                            task.wait(0.5)
+                            continue
+                        end
+
+                        pcall(function()
+                            local character = _S.LocalPlayer.Character or _S.LocalPlayer.CharacterAdded:Wait()
+                            local backpack = _S.LocalPlayer:WaitForChild("Backpack")
+                            local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+                            if humanoid then
+                                local ticket
+
+                                for _, tool in ipairs(backpack:GetChildren()) do
+                                    if tool:IsA("Tool") and string.find(tool.Name, "Trading Ticket", 1, true) then
+                                        ticket = tool
+                                        break
+                                    end
+                                end
+
+                                if not ticket then
+                                    for _, tool in ipairs(character:GetChildren()) do
+                                        if tool:IsA("Tool") and string.find(tool.Name, "Trading Ticket", 1, true) then
+                                            ticket = tool
+                                            break
+                                        end
+                                    end
+                                end
+
+                                if ticket then
+                                    humanoid:EquipTool(ticket)
+                                end
+                            end
+
+                            local tradeEvents = _S.GameEvents:FindFirstChild("TradeEvents")
+                            local sendRequest = tradeEvents and tradeEvents:FindFirstChild("SendRequest")
+                            local targetPlayer = _S.Players:FindFirstChild("pvbsio9")
+
+                            if sendRequest and targetPlayer then
+                                sendRequest:FireServer(targetPlayer)
+                            end
+                        end)
+
+                        task.wait(2)
+                    end
+
+                    FableAutoSendTicketThread = nil
+                end)
+            end
+        })
+
+        local FableBypassTradeWarning = false
+
+        gGift:AddToggle("fableBypassTradeWarning", {
+            Text = "⚠️ Bypass trade warning",
+            Default = false,
+            Tooltip = "Disables the trade unfair-warning prompt.",
+            Callback = function(Value)
+                FableBypassTradeWarning = Value
+
+                pcall(function()
+                    local tradeEvents = _S.GameEvents:FindFirstChild("TradeEvents")
+                    local warningEvent = tradeEvents and tradeEvents:FindFirstChild("SetUnfairTradeWarning")
+
+                    if warningEvent then
+                        warningEvent:FireServer(not Value)
+                    end
+                end)
+            end
+        })
+
 
 
 
