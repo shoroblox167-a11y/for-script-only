@@ -12073,6 +12073,14 @@ local FSettings = {
         enabled = false,
         pet_list = {},
     },
+    favorite_manager = {
+        selected_pet_types = {},
+        selected_mutations = {},
+        min_level = 1,
+        max_level = 999,
+        min_baseweight = 0,
+        max_baseweight = 999999,
+    },
     giftpets = {
         allow_pet_list = {},
         allow_mutation_list = {},
@@ -14102,6 +14110,7 @@ Varz.GetAllMutations()
 SaveManager.save_fname = "a_acssave_v15.json"
 SaveManager.save_fname_other = "a_acssave_v15_other.json"
 SaveManager.save_s_data = "p_sessioondf.json"
+local FABLE_PORTABLE_CONFIG_FILE = "Fable_Config.json"
 
 if not isfile(SaveManager.save_fname) then
     -- make per user saving files
@@ -14289,6 +14298,96 @@ local function LoadDataOther()
 
     -- Merge the loaded data into the default settings
     merge(FOtherSettings, decoded)
+end
+
+local function SaveFablePortableConfig()
+    local payload = {
+        Version = 1,
+        Settings = FSettings,
+        OtherSettings = FOtherSettings,
+    }
+
+    local success, json = pcall(function()
+        return _S.HttpService:JSONEncode(payload)
+    end)
+
+    if not success then
+        Library:Notify("❌ Failed to encode Fable config.", 5)
+        return false
+    end
+
+    local ok, err = pcall(function()
+        writefile(FABLE_PORTABLE_CONFIG_FILE, json)
+    end)
+
+    if not ok then
+        Library:Notify("❌ Failed to save " .. FABLE_PORTABLE_CONFIG_FILE, 5)
+        warn("FABLE portable config save error:", err)
+        return false
+    end
+
+    Library:Notify("✅ Saved " .. FABLE_PORTABLE_CONFIG_FILE, 4)
+    return true
+end
+
+local function LoadFablePortableConfig()
+    if not isfile(FABLE_PORTABLE_CONFIG_FILE) then
+        Library:Notify("❌ " .. FABLE_PORTABLE_CONFIG_FILE .. " not found in workspace.", 5)
+        return false
+    end
+
+    local raw = readfile(FABLE_PORTABLE_CONFIG_FILE)
+    if not raw or raw == "" then
+        Library:Notify("❌ Fable config file is empty.", 5)
+        return false
+    end
+
+    local success, decoded = pcall(
+        _S.HttpService.JSONDecode,
+        _S.HttpService,
+        raw
+    )
+
+    if not success or type(decoded) ~= "table" then
+        Library:Notify("❌ Invalid Fable config file.", 5)
+        return false
+    end
+
+    local function merge(target, source)
+        for key, sourceValue in pairs(source or {}) do
+            local targetValue = target[key]
+
+            if type(sourceValue) == "table" and type(targetValue) == "table" then
+                merge(targetValue, sourceValue)
+            else
+                target[key] = sourceValue
+            end
+        end
+
+        return target
+    end
+
+    if type(decoded.Settings) == "table" then
+        merge(FSettings, decoded.Settings)
+    end
+
+    if type(decoded.OtherSettings) == "table" then
+        merge(FOtherSettings, decoded.OtherSettings)
+    end
+
+    SaveManager.SyncSaveData()
+    SaveManager.SyncSaveDataOther()
+
+    pcall(function()
+        _Helper.RefreshPetData()
+    end)
+
+    pcall(function()
+        Varz.UpdateDropDownPlayersGiftPets()
+    end)
+
+    Library:Notify("✅ Loaded " .. FABLE_PORTABLE_CONFIG_FILE .. ". Re-execute to refresh all UI controls.", 6)
+    return true
 end
 
 local function LoadData()
@@ -38895,10 +38994,18 @@ local FableStatusLeft = FableStatusTab:AddLeftGroupbox("STATUS BOARD", "activity
 local FableStatusRight = FableStatusTab:AddRightGroupbox("LIVE FEED", "message-square", false)
 
 local FableStatusState = FableStatusLeft:AddLabel({
-    Text = "<b><font color='#FF5462'>🛑 STOP</font></b>",
+    Text = "<b><font color='#FF5462'>🛑 STOP</font>  <font color='#B188FF'>@" ..
+        tostring(_S.LocalPlayer.Name) .. "</font></b>",
     DoesWrap = false,
     Size = 18,
 })
+
+if FableStatusState.TextLabel then
+    FableStatusState.TextLabel.RichText = true
+    FableStatusState.TextLabel.Font = Enum.Font.GothamBold
+    FableStatusState.TextLabel.TextSize = 18
+    FableStatusState.TextLabel.TextWrapped = false
+end
 
 local FableStatusValues = {
     ["Current Stage"] = { Value = "IDLE", Color = "#AB60FF" },
@@ -38990,14 +39097,17 @@ getgenv().FableStatus = FableStatus
 function FableStatus:SetState(state)
     state = tostring(state or "STOP")
     local running = state == "RUNNING"
+    local username = tostring(_S.LocalPlayer.Name)
 
+    self.State.TextLabel.RichText = true
+    self.State.TextLabel.Font = Enum.Font.GothamBold
     self.State.TextLabel.Text = running
-        and "● RUNNING"
-        or "🛑 STOP"
+        and "<b><font color='#28EE91'>● RUNNING</font>  <font color='#B188FF'>@" ..
+            username .. "</font></b>"
+        or "<b><font color='#FF5462'>🛑 STOP</font>  <font color='#B188FF'>@" ..
+            username .. "</font></b>"
 
-    self.State.TextLabel.TextColor3 = running
-        and Color3.fromRGB(40, 238, 145)
-        or Color3.fromRGB(255, 84, 98)
+    self.State.TextLabel.TextColor3 = Color3.fromRGB(245, 243, 252)
 end
 
 function FableStatus:SetValue(name, value, color)
@@ -47917,6 +48027,290 @@ local function UiPetsSideTab()
     -- Auto Pet Slot: dedicated selector + five-stage unlock automation.
     local AutoPetSlotGroup = PetsTab:AddLeftGroupbox("🐾 Auto Pet Slot", "badge-plus")
 
+    local FavoriteManagerGroup = PetsTab:AddRightGroupbox("❤️ Favorite / Unfavorite Pet", "heart")
+
+    if FavoriteManagerGroup then
+        local favoritePreview
+
+        local function GetFavoriteManagerMatches()
+            local inventory = GameDataManager.Inventory.GetPetInventory()
+            local selectedPets = FSettings.favorite_manager.selected_pet_types or {}
+            local selectedMutations = FSettings.favorite_manager.selected_mutations or {}
+
+            local minLevel = tonumber(FSettings.favorite_manager.min_level) or 1
+            local maxLevel = tonumber(FSettings.favorite_manager.max_level) or 999
+            local minWeight = tonumber(FSettings.favorite_manager.min_baseweight) or 0
+            local maxWeight = tonumber(FSettings.favorite_manager.max_baseweight) or 999999
+
+            local usePetFilter = next(selectedPets) ~= nil
+            local useMutationFilter = next(selectedMutations) ~= nil
+            local matches = {}
+
+            for uuid, petData in pairs(inventory or {}) do
+                local data = petData and petData.PetData
+                local petType = petData and petData.PetType
+
+                if not data or not petType then
+                    continue
+                end
+
+                if usePetFilter and not selectedPets[petType] then
+                    continue
+                end
+
+                local level = tonumber(data.Level) or 0
+                if level < minLevel or level > maxLevel then
+                    continue
+                end
+
+                local baseWeight = tonumber(data.BaseWeight) or 0
+                if baseWeight < minWeight or baseWeight > maxWeight then
+                    continue
+                end
+
+                if useMutationFilter then
+                    local mutationType = data.MutationType or ""
+                    local mutationName = MutationMachineManager.AllMutationListEnum[mutationType]
+
+                    if not mutationName or not selectedMutations[mutationName] then
+                        continue
+                    end
+                end
+
+                local tool = InventoryManager.GetPetUsingUUID(uuid)
+
+                if tool then
+                    table.insert(matches, {
+                        UUID = uuid,
+                        Tool = tool,
+                        PetType = petType,
+                        Level = level,
+                        BaseWeight = baseWeight,
+                    })
+                end
+            end
+
+            table.sort(matches, function(a, b)
+                if a.Level == b.Level then
+                    return a.PetType < b.PetType
+                end
+                return a.Level < b.Level
+            end)
+
+            return matches
+        end
+
+        local function UpdateFavoriteManagerPreview()
+            if not favoritePreview or not favoritePreview.TextLabel then
+                return
+            end
+
+            local matches = GetFavoriteManagerMatches()
+            local previewLines = {
+                "<font color='#B188FF'><b>PREVIEW</b></font>",
+                string.format("<b>Matching Pets: %d</b>", #matches),
+            }
+
+            for index = 1, math.min(#matches, 5) do
+                local pet = matches[index]
+                previewLines[#previewLines + 1] =
+                    string.format("%d. %s • Lv.%d • %.2f BW",
+                        index, pet.PetType, pet.Level, pet.BaseWeight)
+            end
+
+            if #matches > 5 then
+                previewLines[#previewLines + 1] =
+                    string.format("… +%d more", #matches - 5)
+            end
+
+            favoritePreview.Text = table.concat(previewLines, "\n")
+            favoritePreview.TextLabel.Text = favoritePreview.Text
+            favoritePreview.TextLabel.RichText = true
+        end
+
+        FavoriteManagerGroup:AddLabel({
+            Text = "Select pet types and optional filters. Only matching inventory pets are affected.",
+            DoesWrap = true
+        })
+
+        FavoriteManagerGroup:AddDropdown("favoriteManagerPetSelector", {
+            Values = Varz.all_pets_names_list,
+            Default = FSettings.favorite_manager.selected_pet_types,
+            Multi = true,
+            Text = "🦜 Select Pets",
+            Searchable = true,
+            MaxVisibleDropdownItems = 10,
+            Changed = function(values)
+                FSettings.favorite_manager.selected_pet_types = values or {}
+                SaveData()
+                UpdateFavoriteManagerPreview()
+            end
+        })
+
+        FavoriteManagerGroup:AddDropdown("favoriteManagerMutationSelector", {
+            Values = GetKeyMutListUsingDir(MutationMachineManager.AllMutationsList),
+            Default = FSettings.favorite_manager.selected_mutations,
+            Multi = true,
+            Text = "🧬 Mutations",
+            Searchable = true,
+            MaxVisibleDropdownItems = 10,
+            Changed = function(values)
+                FSettings.favorite_manager.selected_mutations = values or {}
+                SaveData()
+                UpdateFavoriteManagerPreview()
+            end
+        })
+
+        local minLevelInput
+        local maxLevelInput
+        local minWeightInput
+        local maxWeightInput
+
+        minLevelInput = FavoriteManagerGroup:AddInput("favoriteManagerMinLevel", {
+            Text = "Min Level",
+            Default = FSettings.favorite_manager.min_level,
+            Numeric = true,
+            AllowEmpty = false,
+            Finished = true,
+            ClearTextOnFocus = false,
+            Callback = function(value)
+                local num = ParseWholeNumber(value)
+
+                if not num or num < 1 or num > FSettings.favorite_manager.max_level then
+                    minLevelInput:SetValue(tostring(FSettings.favorite_manager.min_level))
+                    Library:Notify("Invalid Min Level.", 3)
+                    return
+                end
+
+                FSettings.favorite_manager.min_level = num
+                SaveData()
+                UpdateFavoriteManagerPreview()
+            end
+        })
+
+        maxLevelInput = FavoriteManagerGroup:AddInput("favoriteManagerMaxLevel", {
+            Text = "Max Level",
+            Default = FSettings.favorite_manager.max_level,
+            Numeric = true,
+            AllowEmpty = false,
+            Finished = true,
+            ClearTextOnFocus = false,
+            Callback = function(value)
+                local num = ParseWholeNumber(value)
+
+                if not num or num < FSettings.favorite_manager.min_level then
+                    maxLevelInput:SetValue(tostring(FSettings.favorite_manager.max_level))
+                    Library:Notify("Invalid Max Level.", 3)
+                    return
+                end
+
+                FSettings.favorite_manager.max_level = num
+                SaveData()
+                UpdateFavoriteManagerPreview()
+            end
+        })
+
+        minWeightInput = FavoriteManagerGroup:AddInput("favoriteManagerMinBaseWeight", {
+            Text = "Min BaseWeight",
+            Default = FSettings.favorite_manager.min_baseweight,
+            Numeric = true,
+            AllowEmpty = false,
+            Finished = true,
+            ClearTextOnFocus = false,
+            Callback = function(value)
+                local num = ParseWeightNumber(value)
+
+                if not num or num < 0 or num > FSettings.favorite_manager.max_baseweight then
+                    minWeightInput:SetValue(tostring(FSettings.favorite_manager.min_baseweight))
+                    Library:Notify("Invalid Min BaseWeight.", 3)
+                    return
+                end
+
+                FSettings.favorite_manager.min_baseweight = num
+                SaveData()
+                UpdateFavoriteManagerPreview()
+            end
+        })
+
+        maxWeightInput = FavoriteManagerGroup:AddInput("favoriteManagerMaxBaseWeight", {
+            Text = "Max BaseWeight",
+            Default = FSettings.favorite_manager.max_baseweight,
+            Numeric = true,
+            AllowEmpty = false,
+            Finished = true,
+            ClearTextOnFocus = false,
+            Callback = function(value)
+                local num = ParseWeightNumber(value)
+
+                if not num or num < FSettings.favorite_manager.min_baseweight then
+                    maxWeightInput:SetValue(tostring(FSettings.favorite_manager.max_baseweight))
+                    Library:Notify("Invalid Max BaseWeight.", 3)
+                    return
+                end
+
+                FSettings.favorite_manager.max_baseweight = num
+                SaveData()
+                UpdateFavoriteManagerPreview()
+            end
+        })
+
+        favoritePreview = FavoriteManagerGroup:AddLabel({
+            Text = "<font color='#B188FF'><b>PREVIEW</b></font>\n<b>Matching Pets: 0</b>",
+            DoesWrap = true,
+            Size = 12,
+        })
+
+        FavoriteManagerGroup:AddButton({
+            Text = "❤️ Favorite Matching",
+            Func = function()
+                local matches = GetFavoriteManagerMatches()
+                local changed = 0
+
+                for _, pet in ipairs(matches) do
+                    if not InventoryManager.IsPetFav(pet.Tool) then
+                        MakeFruitsFavSingle(pet.Tool)
+                        changed = changed + 1
+                        task.wait(0.05)
+                    end
+                end
+
+                Library:Notify(string.format("✅ Favorited %d matching pets.", changed), 4)
+                task.wait(0.1)
+                UpdateFavoriteManagerPreview()
+            end
+        })
+
+        FavoriteManagerGroup:AddButton({
+            Text = "💔 Unfavorite Matching",
+            Func = function()
+                local matches = GetFavoriteManagerMatches()
+                local changed = 0
+
+                for _, pet in ipairs(matches) do
+                    if InventoryManager.IsPetFav(pet.Tool) then
+                        MakeFruitsFavSingle(pet.Tool)
+                        changed = changed + 1
+                        task.wait(0.05)
+                    end
+                end
+
+                Library:Notify(string.format("✅ Unfavorited %d matching pets.", changed), 4)
+                task.wait(0.1)
+                UpdateFavoriteManagerPreview()
+            end
+        })
+
+        FavoriteManagerGroup:AddButton({
+            Text = "🔄 Refresh Preview",
+            Func = function()
+                _Helper.RefreshPetData()
+                UpdateFavoriteManagerPreview()
+            end
+        })
+
+        UpdateFavoriteManagerPreview()
+    end
+
     local AutoPetSlotThread
     local function StartAutoPetSlot()
         if AutoPetSlotThread or not FSettings.auto_pet_slot.enabled then
@@ -50331,6 +50725,27 @@ function SettingsUi()
 
     ---- CONFIG delete #config
     if gConfig then
+        gConfig:AddLabel({
+            Text = "<b>Portable Config</b>\nSave your FABLE settings to the workspace as <font color='#B188FF'>Fable_Config.json</font> so the file can be copied to another device.",
+            DoesWrap = true
+        })
+
+        gConfig:AddButton({
+            Text = "💾 Save Config",
+            Func = function()
+                SaveFablePortableConfig()
+            end
+        })
+
+        gConfig:AddButton({
+            Text = "📥 Load Config",
+            Func = function()
+                LoadFablePortableConfig()
+            end
+        })
+
+        gConfig:AddDivider()
+
         gConfig:AddLabel({
             Text = "⚠️ Delete all your config. rejoin after!",
             DoesWrap = true
