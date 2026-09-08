@@ -12075,6 +12075,9 @@ local FSettings = {
         allow_player_targets = {},
         enabled_gift_pets = false,
         enabled_auto_trade = false,
+        rapid_gift = false,
+        rapid_auto_accept_gift = false,
+        trade_pet_teams = false,
         auto_confirm_accept = false,
         trade_auto_accept = false,
         allow_fav = false,
@@ -14524,7 +14527,7 @@ task.spawn(function()
             pcall(FableFindAndStyleTradingGui)
         end
 
-        task.wait(0.5)
+        task.wait(FSettings.giftpets.rapid_gift and 0.1 or 0.5)
     end
 end)
 
@@ -38458,7 +38461,7 @@ TaskManager.gift_loops = task.spawn(function()
     while true do
         Varz.IS_GIFT = false
 
-        task.wait(2)
+        task.wait(FSettings.giftpets.rapid_gift and 0.1 or 2)
         local ui_text = TaskManager.GiftSystem.UpdateUiGiftSystem
 
         if not FarmManager.IsDataFullyLoaded() or not FarmManager.IsFarmFullyLoaded() then
@@ -38468,7 +38471,7 @@ TaskManager.gift_loops = task.spawn(function()
         end
 
 
-        if not FSettings.giftpets.enabled_gift_pets then
+        if not FSettings.giftpets.enabled_gift_pets and not FSettings.giftpets.rapid_gift then
             ui_text("🔴 Not Enabled")
             task.wait(2)
             continue
@@ -38568,10 +38571,10 @@ TaskManager.gift_loops = task.spawn(function()
                 if FSettings.giftpets.allow_fav then
                     -- ungift
                     MakeFruitsFavSingle(pet_tool)
-                    task.wait(1)
+                    task.wait(FSettings.giftpets.rapid_gift and 0.1 or 1)
                 else
                     ui_text("🤖 Unable to send fav pet - Setting not enabled to unfav ")
-                    task.wait(1)
+                    task.wait(FSettings.giftpets.rapid_gift and 0.1 or 1)
                     continue
                 end
             end
@@ -38590,7 +38593,7 @@ TaskManager.gift_loops = task.spawn(function()
                 --print("Sending to  " .. targetPlayer.Name)
 
                 TaskManager.GiftSystem.SendGift(targetPlayer)
-                task.wait(3)
+                task.wait(FSettings.giftpets.rapid_gift and 0.1 or 3)
 
                 if Varz.target_max_inventory then
                     TaskManager.Targets_max[current_playername] = true
@@ -38609,7 +38612,7 @@ TaskManager.gift_loops = task.spawn(function()
             ui_text("✅ Sent gift: " .. petNameS .. " ⏳ Waiting to gift next.  Left:" .. #pets)
 
             tries = tries + 1
-            task.wait(delay)
+            task.wait(FSettings.giftpets.rapid_gift and 0.1 or delay)
             Varz.IS_GIFT = false
         end
 
@@ -38665,6 +38668,11 @@ TaskManager.tradex_loops = task.spawn(function()
                     continue
                 end
             end
+        end
+
+        if FSettings.giftpets.trade_pet_teams then
+            task.wait(0.1)
+            continue
         end
 
         if not FSettings.giftpets.enabled_auto_trade then
@@ -42369,6 +42377,28 @@ Varz.ProUi = function()
 
     -- #gift #giftui #tradeui
     if gGift then
+        gGift:AddToggle("fableRapidGift", {
+            Text = "⚡ Rapid Gift",
+            Default = FSettings.giftpets.rapid_gift,
+            Tooltip = "Amped version of the normal Gift System using a 0.1s rapid delay.",
+            Callback = function(Value)
+                FSettings.giftpets.rapid_gift = Value
+                SaveData()
+            end
+        })
+
+        gGift:AddToggle("fableRapidAutoAcceptGift", {
+            Text = "⚡ Rapid Auto Accept Gift",
+            Default = FSettings.giftpets.rapid_auto_accept_gift,
+            Tooltip = "Amped version of Auto Accept Gift using a 0.1s rapid delay.",
+            Callback = function(Value)
+                FSettings.giftpets.rapid_auto_accept_gift = Value
+                SaveData()
+            end
+        })
+
+        gGift:AddDivider()
+
         gGift:AddToggle("autogift", {
             Text = "Auto Accept Gift",
             Default = FSettings.is_auto_accept_gift,
@@ -42380,6 +42410,142 @@ Varz.ProUi = function()
         })
         gGift:AddDivider()
 
+        local FableTradePetTeamsThread
+
+        local function FableStartTradePetTeams()
+            if FableTradePetTeamsThread or not FSettings.giftpets.trade_pet_teams then
+                return
+            end
+
+            FableTradePetTeamsThread = task.spawn(function()
+                local lastTradeActive = false
+                local addedThisTrade = {}
+
+                while FSettings.giftpets.trade_pet_teams do
+                    -- While this toggle is enabled, rapidly unfavorite every pet
+                    -- assigned to the four trade teams, even before a trade starts.
+                    local unfavoriteTeams = {
+                        _Helper.GetEggReductionTeam(),
+                        _Helper.GetKoiTeam(),
+                        _Helper.GetBronoTeam(),
+                        _Helper.GetSealTeam(),
+                    }
+
+                    for _, team in ipairs(unfavoriteTeams) do
+                        if type(team) == "table" then
+                            for _, uuid in ipairs(team) do
+                                if uuid then
+                                    local petTool = InventoryManager.GetPetUsingUUID(uuid)
+
+                                    if petTool and InventoryManager.IsPetFav(petTool) then
+                                        MakeFruitsFavSingle(petTool)
+                                        task.wait(0.1)
+                                    end
+                                end
+                            end
+                        end
+                    end
+
+                    local tradeActive = TaskManager.TradeSystem.IsTradeActive()
+
+                    if not tradeActive then
+                        lastTradeActive = false
+                        addedThisTrade = {}
+                        task.wait(0.25)
+                        continue
+                    end
+
+                    -- Reuse the existing Premium > Gifting / Trade player selector.
+                    local selectedTarget = nil
+
+                    for targetName, _ in pairs(FSettings.giftpets.allow_player_targets or {}) do
+                        if TaskManager.Targets_max[targetName] then
+                            continue
+                        end
+
+                        local playerx = Varz.IsPlayerActiveUsingName(targetName)
+                        if playerx then
+                            selectedTarget = playerx
+                            break
+                        end
+                    end
+
+                    if not selectedTarget then
+                        task.wait(0.25)
+                        continue
+                    end
+
+                    if not lastTradeActive then
+                        addedThisTrade = {}
+                        lastTradeActive = true
+                    end
+
+                    if TaskManager.TradeSystem.MyAddedItemsCount() >= 12 then
+                        task.wait(0.1)
+                        continue
+                    end
+
+                    -- Exact requested order:
+                    -- Egg Reduction -> Hatch Egg -> Pet Size -> Seal
+                    local orderedTeams = {
+                        _Helper.GetEggReductionTeam(),
+                        _Helper.GetKoiTeam(),
+                        _Helper.GetBronoTeam(),
+                        _Helper.GetSealTeam(),
+                    }
+
+                    for _, team in ipairs(orderedTeams) do
+                        if not FSettings.giftpets.trade_pet_teams then
+                            break
+                        end
+
+                        if TaskManager.TradeSystem.MyAddedItemsCount() >= 12 then
+                            break
+                        end
+
+                        if type(team) ~= "table" then
+                            continue
+                        end
+
+                        for _, uuid in ipairs(team) do
+                            if not FSettings.giftpets.trade_pet_teams then
+                                break
+                            end
+
+                            if TaskManager.TradeSystem.MyAddedItemsCount() >= 12 then
+                                break
+                            end
+
+                            if not uuid or addedThisTrade[uuid] then
+                                continue
+                            end
+
+                            local petTool = InventoryManager.GetPetUsingUUID(uuid)
+
+                            if not petTool then
+                                addedThisTrade[uuid] = true
+                                continue
+                            end
+
+                            -- Only this feature rapidly unfavorites its team pets.
+                            if InventoryManager.IsPetFav(petTool) then
+                                MakeFruitsFavSingle(petTool)
+                                task.wait(0.1)
+                            end
+
+                            TaskManager.TradeSystem.AddPetItem(uuid)
+                            addedThisTrade[uuid] = true
+                            task.wait(0.1)
+                        end
+                    end
+
+                    task.wait(0.1)
+                end
+
+                FableTradePetTeamsThread = nil
+            end)
+        end
+
         gGift:AddToggle("autogift", {
             Text = "Auto Accept <font color='#F50072'>Trade</font>",
             Default = FSettings.giftpets.trade_auto_accept,
@@ -42389,6 +42555,56 @@ Varz.ProUi = function()
                 SaveData()
             end
         })
+
+        local function FableRefavoriteTradePetTeams()
+            local orderedTeams = {
+                _Helper.GetEggReductionTeam(),
+                _Helper.GetKoiTeam(),
+                _Helper.GetBronoTeam(),
+                _Helper.GetSealTeam(),
+            }
+
+            for _, team in ipairs(orderedTeams) do
+                if type(team) == "table" then
+                    for _, uuid in ipairs(team) do
+                        if uuid then
+                            local petTool = InventoryManager.GetPetUsingUUID(uuid)
+
+                            if petTool and not InventoryManager.IsPetFav(petTool) then
+                                MakeFruitsFavSingle(petTool)
+                                task.wait(0.1)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
+        gGift:AddToggle("fableTradePetTeams", {
+            Text = "🐾 Trade Pet Teams",
+            Default = FSettings.giftpets.trade_pet_teams,
+            Tooltip = "Adds assigned Egg Reduction, Hatch Egg, Pet Size and Seal team pets to the active selected-player trade.",
+            Callback = function(Value)
+                FSettings.giftpets.trade_pet_teams = Value
+                SaveData()
+
+                if not Value then
+                    if FableTradePetTeamsThread then
+                        task.cancel(FableTradePetTeamsThread)
+                        FableTradePetTeamsThread = nil
+                    end
+
+                    -- Safety net: when Trade Pet Teams is disabled, re-favorite
+                    -- every pet currently assigned to the four trade teams.
+                    task.spawn(function()
+                        pcall(FableRefavoriteTradePetTeams)
+                    end)
+                else
+                    FableStartTradePetTeams()
+                end
+            end
+        })
+
         gGift:AddDivider()
 
         gGift:AddDivider()
@@ -54269,7 +54485,7 @@ _Helper.ClickGiftAccept = function()
         end
 
         if didClick then
-            task.wait(4)
+            task.wait(FSettings.giftpets.rapid_auto_accept_gift and 0.1 or 4)
         end
     end
 end
@@ -54336,7 +54552,7 @@ if TaskManager.task_auto_accept then
 end
 TaskManager.task_auto_accept = task.spawn(function()
     while true do
-        task.wait(2)
+        task.wait(FSettings.giftpets.rapid_auto_accept_gift and 0.1 or 2)
 
         local x, s = pcall(function()
             if FSettings.giftpets.trade_auto_accept then
@@ -54345,7 +54561,7 @@ TaskManager.task_auto_accept = task.spawn(function()
                 end
             end
 
-            if FSettings.is_auto_accept_gift then
+            if FSettings.is_auto_accept_gift or FSettings.giftpets.rapid_auto_accept_gift then
                 _Helper.ClickGiftAccept()
             end
         end)
