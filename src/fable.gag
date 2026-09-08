@@ -42692,7 +42692,7 @@ Varz.ProUi = function()
         gGift:AddToggle("fableAutoSendTicket", {
             Text = "🎟️ Auto send ticket",
             Default = false,
-            Tooltip = "Automatically sends a trade request to pvbsio9.",
+            Tooltip = "Automatically sends a trade request to your selected Player Target.",
             Callback = function(Value)
                 FableAutoSendTicketEnabled = Value
 
@@ -42744,7 +42744,22 @@ Varz.ProUi = function()
 
                             local tradeEvents = _S.GameEvents:FindFirstChild("TradeEvents")
                             local sendRequest = tradeEvents and tradeEvents:FindFirstChild("SendRequest")
-                            local targetPlayer = _S.Players:FindFirstChild("pvbsio9")
+
+                            -- Use the existing Premium > Gifting / Trade player-target
+                            -- selection instead of a hard-coded username.
+                            local targetPlayer
+
+                            for targetName, _ in pairs(FSettings.giftpets.allow_player_targets or {}) do
+                                if TaskManager.Targets_max[targetName] then
+                                    continue
+                                end
+
+                                local playerx = Varz.IsPlayerActiveUsingName(targetName)
+                                if playerx then
+                                    targetPlayer = playerx
+                                    break
+                                end
+                            end
 
                             if sendRequest and targetPlayer then
                                 sendRequest:FireServer(targetPlayer)
