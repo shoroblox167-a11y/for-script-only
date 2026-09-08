@@ -11797,6 +11797,7 @@ local UI_Dropdown = {
     PetLevelDropDown = nil,
     PetBoostSelectDropdown = nil,
     dd_playertargets_giftpets = nil,
+    auto_pet_slot_pet_list = nil,
 
     dropdown_support_team = nil,
     dropdown_target_team = nil,
@@ -12068,6 +12069,10 @@ local FSettings = {
         feed_plant_list = {},
     },
     max_web_count = 7,
+    auto_pet_slot = {
+        enabled = false,
+        pet_list = {},
+    },
     giftpets = {
         allow_pet_list = {},
         allow_mutation_list = {},
@@ -26448,6 +26453,14 @@ _Helper.RefreshPetData = function()
         UI_Dropdown.PetBoostSelectDropdown:SetValues(pcache);
         UI_Dropdown.PetBoostSelectDropdown:SetValue(ConvertUUIDToPetNamesPairs(FSettings.elephant.pet_list),
             surpassCallback)
+    end
+
+    if UI_Dropdown.auto_pet_slot_pet_list then
+        UI_Dropdown.auto_pet_slot_pet_list:SetValues(pcache)
+        UI_Dropdown.auto_pet_slot_pet_list:SetValue(
+            ConvertUUIDToPetNamesPairs(FSettings.auto_pet_slot.pet_list),
+            surpassCallback
+        )
     end
 
 
@@ -47900,6 +47913,147 @@ local function UiPetsSideTab()
     local ChubbyChipmunkUI = PetsTab:AddRightGroupbox("Chubby Chipmunk", "nut")
 
     local pandaUi = PetsTab:AddLeftGroupbox("Red Panda", "panda")
+
+    -- Auto Pet Slot: dedicated selector + five-stage unlock automation.
+    local AutoPetSlotGroup = PetsTab:AddLeftGroupbox("🐾 Auto Pet Slot", "badge-plus")
+
+    local AutoPetSlotThread
+    local function StartAutoPetSlot()
+        if AutoPetSlotThread or not FSettings.auto_pet_slot.enabled then
+            return
+        end
+
+        AutoPetSlotThread = task.spawn(function()
+            local stageRequirements = {20, 30, 45, 60, 75}
+
+            while FSettings.auto_pet_slot.enabled do
+                -- Read the game's actual purchased slot progress every cycle.
+                -- 0 purchased = stage 1 (20+), 1 purchased = stage 2 (30+), etc.
+                local data = _S.DataService:GetData()
+                local petsData = data and data.PetsData
+                local purchasedSlots = tonumber(petsData and petsData.PurchasedEquipSlots) or 0
+                local stageIndex = purchasedSlots + 1
+
+                -- All five pet-equip stages are already unlocked.
+                if stageIndex > #stageRequirements then
+                    break
+                end
+
+                local requiredLevel = stageRequirements[stageIndex]
+                local pets = GameDataManager.Inventory.GetPetInventory()
+                local bestUUID
+                local bestLevel
+
+                -- ONLY use UUIDs explicitly selected in Auto Pet Slot.
+                -- Among those selected pets, choose the lowest qualifying level.
+                for _, selectedUUID in ipairs(FSettings.auto_pet_slot.pet_list or {}) do
+                    local petData = pets and pets[selectedUUID]
+
+                    if petData and petData.PetData then
+                        local level = tonumber(petData.PetData.Level) or 0
+
+                        if level >= requiredLevel then
+                            if not bestLevel or level < bestLevel then
+                                bestLevel = level
+                                bestUUID = selectedUUID
+                            end
+                        end
+                    end
+                end
+
+                if not bestUUID then
+                    task.wait(0.5)
+                    continue
+                end
+
+                -- The game's real PetEquipSlotsUIController sends the selected
+                -- pet UUID as the first argument and the current mode ("Pet")
+                -- as the second argument.
+                local unlockEvent = _S.GameEvents:FindFirstChild("UnlockSlotFromPet")
+
+                if unlockEvent then
+                    pcall(function()
+                        unlockEvent:FireServer(bestUUID, "Pet")
+                    end)
+                end
+
+                -- Re-read PurchasedEquipSlots on the next cycle so the script
+                -- automatically picks up whatever stage the account is on.
+                task.wait(0.5)
+            end
+
+            AutoPetSlotThread = nil
+        end)
+
+    end
+
+    if AutoPetSlotGroup then
+        AutoPetSlotGroup:AddToggle("autoPetSlot", {
+            Text = "🐾 Auto Pet Slot",
+            Default = FSettings.auto_pet_slot.enabled,
+            Tooltip = "Unlocks the five pet-slot stages using only selected Auto Pet Slot pets.",
+            Callback = function(Value)
+                FSettings.auto_pet_slot.enabled = Value
+                SaveData()
+
+                if not Value then
+                    if AutoPetSlotThread then
+                        task.cancel(AutoPetSlotThread)
+                        AutoPetSlotThread = nil
+                    end
+                else
+                    StartAutoPetSlot()
+                end
+            end
+        })
+
+        UI_Dropdown.auto_pet_slot_pet_list = AutoPetSlotGroup:AddDropdown("autoPetSlotPetList", {
+            Values = GetPetsCacheAsTable(),
+            Default = {},
+            Multi = true,
+            Text = "🦜 Select Pets",
+            Searchable = true,
+            MaxVisibleDropdownItems = 10,
+            Tooltip = "ONLY these selected pets can be used for Auto Pet Slot.",
+            Changed = function(newSelection)
+                if not newSelection then
+                    return
+                end
+
+                local selected = {}
+
+                for Value, Selected in pairs(newSelection) do
+                    if Selected then
+                        local uuid = extractUUIDFromString(Value)
+
+                        if uuid then
+                            table.insert(selected, uuid)
+                        end
+                    end
+                end
+
+                FSettings.auto_pet_slot.pet_list = selected
+                SaveData()
+            end
+        })
+
+        AutoPetSlotGroup:AddLabel({
+            Text = "<b>Stages:</b> 20+ → 30+ → 45+ → 60+ → 75+\n" ..
+                "Uses the <b>lowest qualifying selected pet</b> for each stage.",
+            DoesWrap = true
+        })
+
+        AutoPetSlotGroup:AddButton({
+            Text = "🔄 Refresh Auto Pet Slot Pets",
+            Func = function()
+                _Helper.RefreshPetData()
+            end
+        })
+
+        if FSettings.auto_pet_slot.enabled then
+            StartAutoPetSlot()
+        end
+    end
 
     local petEleGroup = nil
 
