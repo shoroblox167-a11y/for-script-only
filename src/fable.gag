@@ -1,4 +1,17 @@
 -- ============================================================================
+-- FABLE V52
+-- Device-shared config + currency display + egg toggles/search
+--
+-- V52 changes:
+--   • Egg settings are toggle-only (priority sliders removed from UI).
+--   • Existing global Settings search bar can search/filter egg toggles.
+--   • Night Egg is the default enabled egg.
+--   • Night Egg keeps the highest hidden priority so it remains first if
+--     multiple eggs are enabled.
+-- ============================================================================
+--
+-- Original embedded library version remains unchanged.
+-- ============================================================================
 -- FABLE V18
 -- V8 Exo UI library + ORIGINAL HUBJ SYSTEM/AUTOHATCH
 --
@@ -11951,8 +11964,20 @@ local FOtherSettings = {
     is_fall_questline_reroll                   = false,
     is_fall_questline_spin                     = false,
     is_playerstats_running                     = true,
+    currency_display_enabled                  = false,
     hatch_rare_withbigsizetm                   = false,
     web_api_key                                = "",
+
+    -- Optional cross-device cloud sync (GitHub Gist).
+    -- Disabled by default. Token is only used for GitHub API requests.
+    cloud_sync_enabled                         = false,
+    cloud_sync_auto_pull                       = true,
+    cloud_sync_auto_push                       = true,
+    cloud_sync_github_token                    = "",
+    cloud_sync_gist_id                         = "",
+    cloud_sync_last_remote_update              = 0,
+    cloud_sync_install_id                      = "",
+
     ascension_max_seeds                        = 1,
     auto_ascension                             = false,
     auto_sellbackpack                          = false,
@@ -12621,14 +12646,14 @@ local FSettings = {
         ["Spooky Egg"] = { enabled = false, order = 1, color = Color3.fromRGB(106, 13, 173) },                      -- Spooky Purple
         ["Jungle Egg"] = { enabled = false, order = 1, color = Color3.fromRGB(50, 205, 50) },                       -- Lime Green
         ["Fall Egg"] = { enabled = false, order = 1, color = Color3.fromRGB(255, 140, 0) },                         -- pumpkin orange
-        ["Common Egg"] = { enabled = true, order = 1, color = Color3.fromRGB(255, 0, 255) },                        -- bright magenta
+        ["Common Egg"] = { enabled = false, order = 1, color = Color3.fromRGB(255, 0, 255) },                        -- bright magenta
         ["Anti Bee Egg"] = { enabled = false, order = 2, color = Color3.fromRGB(255, 128, 0) },                     -- neon orange
         ["Enchanted Egg"] = { enabled = false, order = 3, color = Color3.fromRGB(0, 255, 255) },                    -- bright cyan
         ["Paradise Egg"] = { enabled = false, order = 4, color = Color3.fromRGB(0, 255, 128) },                     -- neon green
         ["Premium Primal Egg"] = { enabled = false, order = 6, color = Color3.fromRGB(255, 255, 0) },               -- bright yellow
         ["Rainbow Premium Primal Egg"] = { enabled = false, order = 7, color = Color3.fromRGB(255, 0, 128) },       -- neon pink
         ["Zen Egg"] = { enabled = false, order = 8, color = Color3.fromRGB(128, 0, 255) },                          -- neon purple
-        ["Night Egg"] = { enabled = false, order = 9, color = Color3.fromRGB(0, 128, 255) },                        -- bright blue
+        ["Night Egg"] = { enabled = true, order = 100, color = Color3.fromRGB(0, 128, 255) },                        -- bright blue
         ["Rare Egg"] = { enabled = false, order = 10, color = Color3.fromRGB(255, 64, 0) },                         -- neon red-orange
         ["Oasis Egg"] = { enabled = false, order = 11, color = Color3.fromRGB(0, 255, 255) },                       -- bright cyan
         ["Rare Summer Egg"] = { enabled = false, order = 12, color = Color3.fromRGB(255, 0, 0) },                   -- neon red
@@ -14107,21 +14132,46 @@ end
 Varz.GetAllMutations()
 
 -- Saving and loading
-SaveManager.save_fname = "a_acssave_v15.json"
-SaveManager.save_fname_other = "a_acssave_v15_other.json"
-SaveManager.save_s_data = "p_sessioondf.json"
+-- V51 device-shared config:
+--   file1.json / file2.json are shared by every Roblox instance using
+--   this executor workspace on the same device.
+--   Session data stays per-account so instances do not overwrite each
+--   other's runtime/session state.
+local FABLE_CONFIG_FOLDER = "exotichub99"
+local FABLE_DEVICE_CONFIG_FILE = FABLE_CONFIG_FOLDER .. "/device_file1.json"
+local FABLE_DEVICE_OTHER_CONFIG_FILE = FABLE_CONFIG_FOLDER .. "/device_file2.json"
 local FABLE_PORTABLE_CONFIG_FILE = "Fable_Config.json"
 
-if not isfile(SaveManager.save_fname) then
-    -- make per user saving files
-    local folder_name = "exotichub99"
-    if not isfolder(folder_name) then
-        makefolder(folder_name)
-    end
-    SaveManager.save_fname = folder_name .. "/" .. Varz.player_userid .. "file1.json"
-    SaveManager.save_fname_other = folder_name .. "/" .. Varz.player_userid .. "file2.json"
-    SaveManager.save_s_data = folder_name .. "/" .. Varz.player_userid .. "filesession.json"
+if not isfolder(FABLE_CONFIG_FOLDER) then
+    makefolder(FABLE_CONFIG_FOLDER)
 end
+
+SaveManager.save_fname = FABLE_DEVICE_CONFIG_FILE
+SaveManager.save_fname_other = FABLE_DEVICE_OTHER_CONFIG_FILE
+SaveManager.save_s_data = FABLE_CONFIG_FOLDER .. "/" .. tostring(Varz.player_userid) .. "filesession.json"
+
+-- One-time migration from the old per-account config files.
+-- The first instance that runs the new V51 format seeds the shared device
+-- config from that account's existing settings, then all instances use the
+-- shared files above.
+local legacy_user_file1 = FABLE_CONFIG_FOLDER .. "/" .. tostring(Varz.player_userid) .. "file1.json"
+local legacy_user_file2 = FABLE_CONFIG_FOLDER .. "/" .. tostring(Varz.player_userid) .. "file2.json"
+
+local function migrateLegacyConfig(legacyPath, sharedPath)
+    if isfile(sharedPath) or not isfile(legacyPath) then
+        return
+    end
+
+    local ok, raw = pcall(readfile, legacyPath)
+    if not ok or not raw or raw == "" then
+        return
+    end
+
+    pcall(writefile, sharedPath, raw)
+end
+
+migrateLegacyConfig(legacy_user_file1, SaveManager.save_fname)
+migrateLegacyConfig(legacy_user_file2, SaveManager.save_fname_other)
 
 -- must match
 Varz.ConfigDeleter = function()
@@ -14138,15 +14188,21 @@ Varz.ConfigDeleter = function()
         end
     end
 
-    local folder_name = "exotichub99"
+    local folder_name = FABLE_CONFIG_FOLDER
 
     if isfolder(folder_name) then
         local uid = tostring(Varz.player_userid)
 
+        -- Shared device config files.
         local folderFiles = {
+            SaveManager.save_fname,
+            SaveManager.save_fname_other,
+            folder_name .. "/" .. uid .. "filesession.json",
+
+            -- Old per-account config files, so Delete All Settings also
+            -- cleans up the previous V51 storage format.
             folder_name .. "/" .. uid .. "file1.json",
             folder_name .. "/" .. uid .. "file2.json",
-            folder_name .. "/" .. uid .. "filesession.json",
         }
 
         for _, file in ipairs(folderFiles) do
@@ -14208,6 +14264,8 @@ SaveManager.SaveSessionSettings.LoadFile()
 
 
 
+local FableCloudQueuePush
+
 SaveManager.SyncSaveData = function()
     if Varz.mark_save_disabled then
         return
@@ -14219,6 +14277,7 @@ SaveManager.SyncSaveData = function()
 
     if success then
         writefile(SaveManager.save_fname, json)
+        FableCloudQueuePush()
     else
         --warn("❌ Error: Failed to encode settings to JSON. Data not saved.")
     end
@@ -14246,6 +14305,7 @@ SaveManager.SyncSaveDataOther = function()
 
     if success then
         writefile(SaveManager.save_fname_other, json)
+        FableCloudQueuePush()
         -- warn(json)
     else
         --warn("❌ Error: Failed to encode other settings to JSON. Data not saved.")
@@ -14298,6 +14358,387 @@ local function LoadDataOther()
 
     -- Merge the loaded data into the default settings
     merge(FOtherSettings, decoded)
+end
+
+-- ============================================================================
+-- OPTIONAL CLOUD SYNC
+-- Uses GitHub Gists as a private cloud store. Disabled by default.
+-- The user supplies a GitHub token with Gist permission and optionally an
+-- existing Gist ID. If no Gist ID is supplied, the first upload creates one.
+-- ============================================================================
+local FableCloudSync = {
+    Filename = "Fable_V51_Config.json",
+    ApiBase = "https://api.github.com",
+    Busy = false,
+    PushQueued = false,
+    LastPush = 0,
+    MinPushInterval = 30,
+}
+
+local function FableCloudRequest(method, url, body, token)
+    local req =
+        (syn and syn.request)
+        or (http and http.request)
+        or http_request
+        or request
+        or (fluxus and fluxus.request)
+        or (krnl and krnl.request)
+
+    local headers = {
+        ["Accept"] = "application/vnd.github+json",
+        ["Content-Type"] = "application/json",
+        ["X-GitHub-Api-Version"] = "2022-11-28",
+    }
+
+    if token and token ~= "" then
+        headers["Authorization"] = "Bearer " .. token
+    end
+
+    local payload = body
+    if body ~= nil and type(body) ~= "string" then
+        payload = _S.HttpService:JSONEncode(body)
+    end
+
+    if req then
+        local ok, response = pcall(req, {
+            Url = url,
+            Method = method,
+            Headers = headers,
+            Body = payload or "",
+        })
+        if not ok then
+            return false, nil, tostring(response)
+        end
+        return true, response, nil
+    end
+
+    -- Roblox HttpService fallback. This requires HTTP requests to be enabled.
+    local ok, response = pcall(function()
+        if method == "GET" then
+            return _S.HttpService:GetAsync(url, false, headers)
+        elseif method == "POST" then
+            return _S.HttpService:PostAsync(url, payload or "", Enum.HttpContentType.ApplicationJson, false, headers)
+        else
+            error("Executor request() is required for GitHub " .. method)
+        end
+    end)
+
+    if not ok then
+        return false, nil, tostring(response)
+    end
+    return true, { StatusCode = 200, Body = response }, nil
+end
+
+local function FableCloudResponseBody(response)
+    if type(response) == "string" then
+        return response
+    end
+    if type(response) == "table" then
+        return response.Body or response.body or ""
+    end
+    return ""
+end
+
+local function FableCloudStatus(response)
+    if type(response) ~= "table" then
+        return 200
+    end
+    return tonumber(response.StatusCode or response.status_code or response.Status or response.status) or 200
+end
+
+local function FableCloudCloneWithoutSecrets(value, key)
+    if type(value) ~= "table" then
+        return value
+    end
+
+    local out = {}
+    for k, v in pairs(value) do
+        -- Never upload the GitHub token. It is a local credential, not config.
+        if k ~= "cloud_sync_github_token" then
+            out[k] = FableCloudCloneWithoutSecrets(v, k)
+        end
+    end
+    return out
+end
+
+local function FableCloudBuildPayload()
+    local safeOtherSettings = FableCloudCloneWithoutSecrets(FOtherSettings)
+    return {
+        Version = 2,
+        Product = "Fable V52",
+        UpdatedAt = os.time(),
+        InstallId = FOtherSettings.cloud_sync_install_id,
+        Settings = FableCloudCloneWithoutSecrets(FSettings),
+        OtherSettings = safeOtherSettings,
+    }
+end
+local function FableCloudEnsureInstallId()
+    if type(FOtherSettings.cloud_sync_install_id) == "string"
+        and FOtherSettings.cloud_sync_install_id ~= "" then
+        return
+    end
+
+    local guid = nil
+    pcall(function()
+        guid = _S.HttpService:GenerateGUID(false)
+    end)
+
+    if not guid then
+        guid = tostring(os.time()) .. "-" .. tostring(math.random(100000, 999999))
+    end
+
+    FOtherSettings.cloud_sync_install_id = guid
+end
+
+FableCloudEnsureInstallId()
+
+local function FableCloudEnabled()
+    return FOtherSettings.cloud_sync_enabled
+        and type(FOtherSettings.cloud_sync_github_token) == "string"
+        and FOtherSettings.cloud_sync_github_token ~= ""
+end
+
+local function FableCloudSetGistId(id)
+    if type(id) == "string" and id ~= "" then
+        FOtherSettings.cloud_sync_gist_id = id
+        SaveManager.SyncSaveDataOther()
+    end
+end
+
+local function FableCloudPush(showNotify)
+    if not FableCloudEnabled() then
+        if showNotify then
+            Library:Notify("☁️ Cloud Sync is disabled or token is missing.", 5)
+        end
+        return false
+    end
+
+    if FableCloudSync.Busy then
+        return false
+    end
+
+    FableCloudSync.Busy = true
+    local success = false
+    local err = nil
+
+    local ok, result = pcall(function()
+        local payload = FableCloudBuildPayload()
+        local content = _S.HttpService:JSONEncode(payload)
+        local gistId = tostring(FOtherSettings.cloud_sync_gist_id or "")
+
+        if gistId == "" then
+            local body = {
+                description = "Fable V52 Cloud Config",
+                public = false,
+                files = {
+                    [FableCloudSync.Filename] = { content = content }
+                }
+            }
+
+            local reqOk, response, reqErr = FableCloudRequest(
+                "POST",
+                FableCloudSync.ApiBase .. "/gists",
+                body,
+                FOtherSettings.cloud_sync_github_token
+            )
+            if not reqOk then
+                error(reqErr or "GitHub request failed")
+            end
+
+            local status = FableCloudStatus(response)
+            if status < 200 or status >= 300 then
+                error("GitHub create gist failed (HTTP " .. tostring(status) .. ")")
+            end
+
+            local responseBody = FableCloudResponseBody(response)
+            local decoded = _S.HttpService:JSONDecode(responseBody)
+            if type(decoded) ~= "table" or type(decoded.id) ~= "string" then
+                error("GitHub did not return a valid Gist ID")
+            end
+
+            FableCloudSetGistId(decoded.id)
+        else
+            local body = {
+                files = {
+                    [FableCloudSync.Filename] = { content = content }
+                }
+            }
+
+            local reqOk, response, reqErr = FableCloudRequest(
+                "PATCH",
+                FableCloudSync.ApiBase .. "/gists/" .. gistId,
+                body,
+                FOtherSettings.cloud_sync_github_token
+            )
+            if not reqOk then
+                error(reqErr or "GitHub request failed")
+            end
+
+            local status = FableCloudStatus(response)
+            if status < 200 or status >= 300 then
+                error("GitHub update failed (HTTP " .. tostring(status) .. ")")
+            end
+        end
+
+        FOtherSettings.cloud_sync_last_remote_update = payload.UpdatedAt
+        SaveManager.SyncSaveDataOther()
+        success = true
+    end)
+
+    if not ok then
+        err = tostring(result)
+    end
+
+    FableCloudSync.Busy = false
+
+    if showNotify then
+        if success then
+            Library:Notify("☁️ Cloud config uploaded.", 4)
+        else
+            Library:Notify("❌ Cloud upload failed: " .. tostring(err), 6)
+        end
+    end
+
+    return success
+end
+
+local function FableCloudPull(showNotify)
+    if not FableCloudEnabled() then
+        if showNotify then
+            Library:Notify("☁️ Cloud Sync is disabled or token is missing.", 5)
+        end
+        return false
+    end
+
+    local gistId = tostring(FOtherSettings.cloud_sync_gist_id or "")
+    if gistId == "" then
+        if showNotify then
+            Library:Notify("☁️ No cloud config exists yet. Upload first.", 5)
+        end
+        return false
+    end
+
+    if FableCloudSync.Busy then
+        return false
+    end
+
+    FableCloudSync.Busy = true
+    local success = false
+    local err = nil
+
+    local ok, result = pcall(function()
+        local reqOk, response, reqErr = FableCloudRequest(
+            "GET",
+            FableCloudSync.ApiBase .. "/gists/" .. gistId,
+            nil,
+            FOtherSettings.cloud_sync_github_token
+        )
+        if not reqOk then
+            error(reqErr or "GitHub request failed")
+        end
+
+        local status = FableCloudStatus(response)
+        if status < 200 or status >= 300 then
+            error("GitHub download failed (HTTP " .. tostring(status) .. ")")
+        end
+
+        local gist = _S.HttpService:JSONDecode(FableCloudResponseBody(response))
+        local file = gist.files and gist.files[FableCloudSync.Filename]
+        if type(file) ~= "table" or type(file.content) ~= "string" then
+            error("Cloud config file was not found in the Gist")
+        end
+
+        local decoded = _S.HttpService:JSONDecode(file.content)
+        if type(decoded) ~= "table" then
+            error("Cloud config JSON is invalid")
+        end
+
+        local function merge(target, source)
+            for key, sourceValue in pairs(source or {}) do
+                local targetValue = target[key]
+                if type(sourceValue) == "table" and type(targetValue) == "table" then
+                    merge(targetValue, sourceValue)
+                else
+                    target[key] = sourceValue
+                end
+            end
+            return target
+        end
+
+        if type(decoded.Settings) == "table" then
+            merge(FSettings, decoded.Settings)
+        end
+        if type(decoded.OtherSettings) == "table" then
+            local token = FOtherSettings.cloud_sync_github_token
+            local enabled = FOtherSettings.cloud_sync_enabled
+            local autoPull = FOtherSettings.cloud_sync_auto_pull
+            local autoPush = FOtherSettings.cloud_sync_auto_push
+            local gistId = FOtherSettings.cloud_sync_gist_id
+
+            merge(FOtherSettings, decoded.OtherSettings)
+
+            -- Cloud connection credentials/settings belong to this device.
+            FOtherSettings.cloud_sync_github_token = token
+            FOtherSettings.cloud_sync_enabled = enabled
+            FOtherSettings.cloud_sync_auto_pull = autoPull
+            FOtherSettings.cloud_sync_auto_push = autoPush
+            if gistId ~= "" then
+                FOtherSettings.cloud_sync_gist_id = gistId
+            end
+        end
+
+        if tonumber(decoded.UpdatedAt) then
+            FOtherSettings.cloud_sync_last_remote_update = tonumber(decoded.UpdatedAt)
+        end
+
+        SaveManager.SyncSaveData()
+        SaveManager.SyncSaveDataOther()
+        success = true
+    end)
+
+    if not ok then
+        err = tostring(result)
+    end
+
+    FableCloudSync.Busy = false
+
+    if success then
+        pcall(function() _Helper.RefreshPetData() end)
+        pcall(function() Varz.UpdateDropDownPlayersGiftPets() end)
+    end
+
+    if showNotify then
+        if success then
+            Library:Notify("☁️ Cloud config downloaded.", 5)
+        else
+            Library:Notify("❌ Cloud download failed: " .. tostring(err), 6)
+        end
+    end
+
+    return success
+end
+
+FableCloudQueuePush = function()
+    if not FableCloudEnabled() or not FOtherSettings.cloud_sync_auto_push then
+        return
+    end
+
+    FableCloudSync.PushQueued = true
+    task.spawn(function()
+        task.wait(3)
+        if not FableCloudSync.PushQueued then
+            return
+        end
+        FableCloudSync.PushQueued = false
+
+        local now = os.time()
+        if now - FableCloudSync.LastPush < FableCloudSync.MinPushInterval then
+            return
+        end
+
+        FableCloudSync.LastPush = now
+        FableCloudPush(false)
+    end)
 end
 
 local function SaveFablePortableConfig()
@@ -14429,6 +14870,15 @@ end
 
 -- Call LoadData() once at the start of your script
 LoadData()
+
+-- Pull the latest cloud copy after local config has loaded.
+if FableCloudEnabled() and FOtherSettings.cloud_sync_auto_pull then
+    task.spawn(function()
+        task.wait(2)
+        FableCloudPull(false)
+    end)
+end
+
 LoadDataOther();
 task.wait(0.1);
 -- Now your script can continue, and FSettings will be correctly populated.
@@ -25165,6 +25615,321 @@ task.spawn(updateEggEspUi)
 
 
 
+
+do
+---------------------------------------------------
+-----------======== Live Currency Display
+---------------------------------------------------
+
+Varz.currencyGui = nil
+Varz.currencyLabels = {}
+
+local CurrencyDisplayOrder = {
+    "Sheckles",
+    "GardenCoins",
+    "Honey",
+    "SummerCoins",
+    "FairyPoints",
+    "CandyCorn",
+    "TradeTokens",
+    "PassPoints",
+    "Flowers",
+    "CarrotCoins",
+    "ButtercupCoins",
+    "HeartCoins",
+    "ChocCoins",
+    "HoneyCoins",
+    "RoyalJelly",
+    "LunarPoints",
+    "Chi",
+}
+
+local CurrencyDisplayNames = {
+    Sheckles = "Sheckles",
+    GardenCoins = "Garden Coins",
+    Honey = "Honey",
+    SummerCoins = "Summer Coins",
+    FairyPoints = "Fairy Points",
+    CandyCorn = "Candy Corn",
+    TradeTokens = "Trade Tokens",
+    PassPoints = "Pass Points",
+    Flowers = "Flowers",
+    CarrotCoins = "Carrot Coins",
+    ButtercupCoins = "Buttercup Coins",
+    HeartCoins = "Heart Coins",
+    ChocCoins = "Choc Coins",
+    HoneyCoins = "Honey Coins",
+    RoyalJelly = "Royal Jelly",
+    LunarPoints = "Lunar Points",
+    Chi = "Chi",
+}
+
+local CurrencyDisplayIcons = {
+    Sheckles = "💰",
+    GardenCoins = "🪙",
+    Honey = "🍯",
+    SummerCoins = "☀️",
+    FairyPoints = "🧚",
+    CandyCorn = "🍬",
+    TradeTokens = "🎟️",
+    PassPoints = "⭐",
+    Flowers = "🌸",
+    CarrotCoins = "🥕",
+    ButtercupCoins = "🌼",
+    HeartCoins = "💗",
+    ChocCoins = "🍫",
+    HoneyCoins = "🍯",
+    RoyalJelly = "👑",
+    LunarPoints = "🌙",
+    Chi = "✨",
+}
+
+local function CurrencyDisplayPrettyName(key)
+    if CurrencyDisplayNames[key] then
+        return CurrencyDisplayNames[key]
+    end
+    local name = tostring(key):gsub("(%l)(%u)", "%1 %2")
+    name = name:gsub("_", " ")
+    return name
+end
+
+local function CurrencyDisplayFormatNumber(value)
+    local n = tonumber(value)
+    if not n then
+        return tostring(value)
+    end
+    if math.abs(n) >= 1000 then
+        local sign = n < 0 and "-" or ""
+        n = math.abs(n)
+        local s = string.format("%.0f", n)
+        local left, num = s:match("^([+-]?%d)(%d*)$")
+        if not left then
+            local rev = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+            return sign .. rev:gsub("^,", "")
+        end
+        local grouped = s:gsub("(%d)(%d%d%d)$", "%1,%2")
+        while true do
+            local new = grouped:gsub("(%d)(%d%d%d),", "%1,%2,")
+            if new == grouped then break end
+            grouped = new
+        end
+        return sign .. grouped
+    end
+    if n % 1 == 0 then
+        return string.format("%.0f", n)
+    end
+    return string.format("%.2f", n):gsub("0+$", ""):gsub("%.$", "")
+end
+
+local function CurrencyDisplayReadData()
+    local values = {}
+    local data = nil
+
+    if _S.DataService and _S.DataService.GetData then
+        pcall(function()
+            data = _S.DataService:GetData()
+        end)
+    end
+
+    -- Sheckles is stored directly in DataService data.
+    if type(data) == "table" and tonumber(data.Sheckles) ~= nil then
+        values.Sheckles = tonumber(data.Sheckles)
+    end
+
+    -- Event/special currencies are stored in SpecialCurrency. We deliberately
+    -- enumerate numeric entries so newly-added event currencies can appear
+    -- without requiring another script update.
+    if type(data) == "table" and type(data.SpecialCurrency) == "table" then
+        for key, value in pairs(data.SpecialCurrency) do
+            if tonumber(value) ~= nil then
+                values[tostring(key)] = tonumber(value)
+            end
+        end
+    end
+
+    -- Some event currency UIs are authoritative for the current displayed
+    -- balance. Use them as a fallback when the corresponding data key is not
+    -- present in this game build.
+    local guiFallbacks = {
+        GardenCoins = function()
+            local ok, value = pcall(function()
+                return _S.PlayerGui.GardenCoinCurrency_UI.Frame.TextLabel1.val.Value
+            end)
+            return ok and tonumber(value) or nil
+        end,
+        Honey = function()
+            local ok, value = pcall(function()
+                return _S.PlayerGui.Honey_UI.Frame.TextLabel1.val.Value
+            end)
+            return ok and tonumber(value) or nil
+        end,
+        CandyCorn = function()
+            local ok, value = pcall(function()
+                return _S.PlayerGui.CandyCornCurrency_UI.Frame.TextLabel1.val.Value
+            end)
+            return ok and tonumber(value) or nil
+        end,
+    }
+
+    for key, reader in pairs(guiFallbacks) do
+        if values[key] == nil then
+            local ok, value = pcall(reader)
+            if ok and value ~= nil then
+                values[key] = value
+            end
+        end
+    end
+
+    return values
+end
+
+local function CurrencyDisplayEnsureGui()
+    if Varz.currencyGui and Varz.currencyGui.Parent then
+        return
+    end
+
+    Varz.currencyLabels = {}
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "FableCurrencyDisplay"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 9999
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+    local frame = Instance.new("Frame")
+    frame.Name = "MainFrame"
+    frame.AnchorPoint = Vector2.new(1, 0)
+    frame.Position = UDim2.new(1, -18, 0, 115)
+    frame.Size = UDim2.fromOffset(235, 0)
+    frame.AutomaticSize = Enum.AutomaticSize.Y
+    frame.BackgroundColor3 = Color3.fromRGB(8, 8, 12)
+    frame.BackgroundTransparency = 0.18
+    frame.BorderSizePixel = 0
+    frame.Parent = gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = frame
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(170, 80, 255)
+    stroke.Thickness = 1
+    stroke.Transparency = 0.2
+    stroke.Parent = frame
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 7)
+    padding.PaddingBottom = UDim.new(0, 7)
+    padding.PaddingLeft = UDim.new(0, 10)
+    padding.PaddingRight = UDim.new(0, 10)
+    padding.Parent = frame
+
+    local layout = Instance.new("UIListLayout")
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 2)
+    layout.Parent = frame
+
+    local title = Instance.new("TextLabel")
+    title.Name = "Title"
+    title.Size = UDim2.new(1, 0, 0, 20)
+    title.BackgroundTransparency = 1
+    title.Text = "💰 CURRENCIES"
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 13
+    title.TextColor3 = Color3.fromRGB(220, 220, 230)
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.LayoutOrder = 0
+    title.Parent = frame
+
+    for index, key in ipairs(CurrencyDisplayOrder) do
+        local label = Instance.new("TextLabel")
+        label.Name = key
+        label.Size = UDim2.new(1, 0, 0, 19)
+        label.BackgroundTransparency = 1
+        label.Text = (CurrencyDisplayIcons[key] or "•") .. " " .. CurrencyDisplayPrettyName(key) .. ": --"
+        label.Font = Enum.Font.GothamMedium
+        label.TextSize = 12
+        label.TextColor3 = Color3.fromRGB(245, 245, 245)
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.LayoutOrder = index
+        label.Visible = false
+        label.Parent = frame
+        Varz.currencyLabels[key] = label
+    end
+
+    Varz.currencyGui = gui
+    gui.Parent = _S.PlayerGui
+end
+
+local function CurrencyDisplayDestroyGui()
+    if Varz.currencyGui then
+        pcall(function() Varz.currencyGui:Destroy() end)
+    end
+    Varz.currencyGui = nil
+    Varz.currencyLabels = {}
+end
+
+TaskManager.UpdateCurrencyDisplay = function()
+    if not (FOtherSettings and FOtherSettings.currency_display_enabled) then
+        CurrencyDisplayDestroyGui()
+        return
+    end
+
+    CurrencyDisplayEnsureGui()
+    local values = CurrencyDisplayReadData()
+
+    -- Keep the fixed order for known currencies, then append any new numeric
+    -- SpecialCurrency keys discovered at runtime.
+    local ordered = {}
+    for _, key in ipairs(CurrencyDisplayOrder) do
+        ordered[key] = true
+    end
+
+    for key, value in pairs(values) do
+        if not Varz.currencyLabels[key] then
+            local frame = Varz.currencyGui and Varz.currencyGui:FindFirstChild("MainFrame")
+            if frame then
+                local label = Instance.new("TextLabel")
+                label.Name = key
+                label.Size = UDim2.new(1, 0, 0, 19)
+                label.BackgroundTransparency = 1
+                label.Font = Enum.Font.GothamMedium
+                label.TextSize = 12
+                label.TextColor3 = Color3.fromRGB(245, 245, 245)
+                label.TextXAlignment = Enum.TextXAlignment.Left
+                label.LayoutOrder = 1000 + (#ordered + 1)
+                label.Parent = frame
+                Varz.currencyLabels[key] = label
+                ordered[key] = true
+            end
+        end
+    end
+
+    for key, label in pairs(Varz.currencyLabels) do
+        local value = values[key]
+        label.Visible = value ~= nil
+        if value ~= nil then
+            label.Text = (CurrencyDisplayIcons[key] or "•") .. " " .. CurrencyDisplayPrettyName(key) .. ": <b>" .. CurrencyDisplayFormatNumber(value) .. "</b>"
+            label.RichText = true
+        end
+    end
+end
+
+if TaskManager.currencyDisplayLoop then
+    task.cancel(TaskManager.currencyDisplayLoop)
+end
+
+TaskManager.currencyDisplayLoop = task.spawn(function()
+    while true do
+        task.wait(0.35)
+        pcall(function()
+            TaskManager.UpdateCurrencyDisplay()
+        end)
+    end
+end)
+
+end
 
 ---------------------------------------------------
 -----------======== Players status
@@ -38970,7 +39735,7 @@ local FABLE_LOGO_ASSET_ID = nil
 
 local Window = Library:CreateWindow({
     Title = "FABLE",
-    Footer = "FABLE • AUTOMATION HUB  •  BUILT FOR GROWTH",
+    Footer = "FABLE V52  •  AUTOMATION HUB  •  BUILT FOR GROWTH",
     Icon = FABLE_LOGO_ASSET_ID,
     IconSize = UDim2.fromOffset(36, 36),
     ToggleKeybind = Enum.KeyCode.RightControl,
@@ -44803,33 +45568,82 @@ Varz.PetTeamsUi()
 -- End of Pets Team ==========================================================================
 
 
--- Egg Priority
+-- Egg Toggles
 local function MEggUi()
-    -- Create the new "Eggs" Tab
-    local max_order = 100
+    -- V52: Toggle-only egg controls.
+    -- The existing window-wide Settings search bar searches these toggle labels.
+    -- Internal egg "order" values are preserved for the hatch backend, but the
+    -- user no longer edits priority with sliders.
     local UIEggTab = Window:AddTab({
-        Name = "Eggs Priority",
-        Description = "Manage Egg hatching priority",
+        Name = "Eggs",
+        Description = "Toggle the eggs you want the hatching system to use",
         Icon = "egg"
     })
 
-    -- Create a groupbox to hold the egg settings
-    local GroupBoxEggs = UIEggTab:AddLeftGroupbox("Egg Priority & Settings", "list-ordered")
-    local eggSettingsGroup = UIEggTab:AddRightGroupbox("Egg Options", "egg")
+    local GroupBoxEggs = UIEggTab:AddLeftGroupbox("Eggs", "egg")
+    local eggOptionsGroup = UIEggTab:AddRightGroupbox("Egg Options", "egg")
 
-    ---====== Egg settings
-    eggSettingsGroup:AddLabel({
-        Text = "ℹ️ Max eggs to place, Put 0 to disable. Press Enter to save",
+    GroupBoxEggs:AddLabel({
+        Text = "Enable or disable eggs below. Use the search bar at the top to quickly find an egg.",
+        DoesWrap = true
+    })
+    GroupBoxEggs:AddDivider()
+
+    -- Keep the configured order for backend compatibility, but display toggles
+    -- in a stable order with Night Egg first.
+    local sortedEggs = {}
+    for name, data in pairs(FSettings.eggs_to_place_array) do
+        table.insert(sortedEggs, {
+            name = name,
+            order = tonumber(data.order) or 0
+        })
+    end
+
+    table.sort(sortedEggs, function(a, b)
+        if a.name == "Night Egg" then
+            return b.name ~= "Night Egg"
+        elseif b.name == "Night Egg" then
+            return false
+        end
+
+        if a.order ~= b.order then
+            return a.order > b.order
+        end
+
+        return a.name:lower() < b.name:lower()
+    end)
+
+    for _, eggInfo in ipairs(sortedEggs) do
+        local eggName = eggInfo.name
+        local eggData = FSettings.eggs_to_place_array[eggName]
+
+        local eggToggle = GroupBoxEggs:AddToggle(eggName .. "_toggle", {
+            Text = eggName,
+            Default = eggData.enabled,
+            Tooltip = "Enable/Disable hatching for " .. eggName,
+            Callback = function(Value)
+                FSettings.eggs_to_place_array[eggName].enabled = Value
+                SaveData()
+                Library:Notify(eggName .. (Value and " Enabled" or " Disabled"), 1)
+            end
+        })
+
+        if eggData.color then
+            eggToggle.TextLabel.TextColor3 = eggData.color
+        end
+    end
+
+    -- Keep the existing max-eggs control available without adding priority sliders.
+    eggOptionsGroup:AddLabel({
+        Text = "ℹ️ Max eggs to place. Put 0 to use MAX. Press Enter to save.",
         DoesWrap = true
     })
 
-
     local function UpdateEggCount()
-        local ud = tonumber(FOtherSettings.max_eggs_to_place)
-
+        local ud = tonumber(FOtherSettings.max_eggs_to_place) or 0
         local str = "x" .. ud
         if ud == 0 then
-            str = "MAX!";
+            str = "MAX!"
         end
 
         return string.format(
@@ -44839,7 +45653,7 @@ local function MEggUi()
     end
 
     local input_egg_limit
-    input_egg_limit = eggSettingsGroup:AddInput("input_egg_limit", {
+    input_egg_limit = eggOptionsGroup:AddInput("input_egg_limit", {
         Text = UpdateEggCount(),
         Default = FOtherSettings.max_eggs_to_place,
         Numeric = true,
@@ -44847,7 +45661,7 @@ local function MEggUi()
         Finished = true,
         ClearTextOnFocus = false,
         Placeholder = "e.g. 4",
-        Tooltip = "Enter 0 to turn this off.",
+        Tooltip = "Enter 0 to use MAX.",
         Callback = function(Value)
             local num = ParseWholeNumber(Value)
 
@@ -44856,76 +45670,16 @@ local function MEggUi()
                 SaveDataOther()
                 input_egg_limit:SetText(UpdateEggCount())
             else
-                --Library:Notify("Invalid ".. Value, 3)
                 input_egg_limit:SetValue(tostring(FOtherSettings.max_eggs_to_place))
             end
         end
     })
 
-
-
-
-    -- Add an informational label
-    GroupBoxEggs:AddLabel({
-        Text = "Enable or disable eggs and set their hatching priority. higher numbers are higher priority.",
+    eggOptionsGroup:AddDivider()
+    eggOptionsGroup:AddLabel({
+        Text = "V52: Egg selection is toggle-only. No manual priority sliders.",
         DoesWrap = true
     })
-    GroupBoxEggs:AddDivider()
-
-    -- 1. Create a temporary table to sort the eggs by their order for display
-    local sortedEggs = {}
-    -- Reference the array from FSettings now
-    for name, data in pairs(FSettings.eggs_to_place_array) do
-        table.insert(sortedEggs, { name = name, order = data.order })
-    end
-
-    table.sort(sortedEggs, function(a, b)
-        return a.order > b.order
-    end)
-
-    -- 2. Loop through the sorted table to create the UI elements in order
-    for _, eggInfo in ipairs(sortedEggs) do
-        local eggName = eggInfo.name
-        -- Get the initial data from the FSettings table
-        local eggData = FSettings.eggs_to_place_array[eggName]
-
-        -- Create a Toggle for enabling/disabling the egg and store it in a variable
-        local eggToggle = GroupBoxEggs:AddToggle(eggName .. "_toggle", {
-            Text = eggName,
-            Default = eggData.enabled,
-            Tooltip = "Enable/Disable hatching for " .. eggName,
-            Callback = function(Value)
-                -- Update the value directly in the FSettings table
-                FSettings.eggs_to_place_array[eggName].enabled = Value
-                SaveData() -- Save the settings
-                Library:Notify(eggName .. (Value and " Enabled" or " Disabled"), 1)
-            end
-        })
-
-        --[[
-            NEW CHANGE: Check for and apply the custom color
-        ]]
-        if eggData.color then
-            eggToggle.TextLabel.TextColor3 = eggData.color
-        end
-
-        -- Create a Slider to set the priority order
-        GroupBoxEggs:AddSlider(eggName .. "_slider", {
-            Text = "Priority Order [Higher = First]",
-            Default = eggData.order,
-            Min = 1,
-            Max = max_order, -- Max priority is the total number of eggs
-            Rounding = 0,    -- Use whole numbers for priority
-            Callback = function(Value)
-                -- Update the value directly in the FSettings table
-                FSettings.eggs_to_place_array[eggName].order = Value
-                SaveData() -- Save the settings
-                --Library:Notify(eggName .. " priority set to " .. Value, 1)
-            end
-        })
-
-        GroupBoxEggs:AddDivider()
-    end
 end
 
 
@@ -50715,6 +51469,7 @@ function SettingsUi()
     local gLogout = UISettingsTab:AddLeftGroupbox("Logout", "layout-dashboard")
 
     local gConfig = UISettingsTab:AddRightGroupbox("<font color='#F52727'>Config</font>", "brush-cleaning")
+    local gCloud = UISettingsTab:AddLeftGroupbox("☁️ Cloud Sync", "cloud")
 
     local devtoolsGroup
     if Varz.dev_tools then
@@ -50723,10 +51478,91 @@ function SettingsUi()
 
 
 
+    -- Optional cross-device cloud configuration.
+    if gCloud then
+        gCloud:AddLabel({
+            Text = "Sync the shared V51 config across devices using a private GitHub Gist. Disabled by default. A GitHub token with Gist access is required.",
+            DoesWrap = true
+        })
+
+        gCloud:AddToggle("cloudSyncEnabled", {
+            Text = "Enable Cloud Sync",
+            Default = FOtherSettings.cloud_sync_enabled,
+            Callback = function(Value)
+                FOtherSettings.cloud_sync_enabled = Value
+                SaveDataOther(true)
+                Library:Notify(Value and "☁️ Cloud Sync enabled." or "☁️ Cloud Sync disabled.", 3)
+            end
+        })
+
+        gCloud:AddToggle("cloudSyncAutoPull", {
+            Text = "Auto Pull on Start",
+            Default = FOtherSettings.cloud_sync_auto_pull,
+            Callback = function(Value)
+                FOtherSettings.cloud_sync_auto_pull = Value
+                SaveDataOther(true)
+            end
+        })
+
+        gCloud:AddToggle("cloudSyncAutoPush", {
+            Text = "Auto Push Changes",
+            Default = FOtherSettings.cloud_sync_auto_push,
+            Callback = function(Value)
+                FOtherSettings.cloud_sync_auto_push = Value
+                SaveDataOther(true)
+            end
+        })
+
+        gCloud:AddInput("cloudGithubToken", {
+            Text = "GitHub Token",
+            Default = FOtherSettings.cloud_sync_github_token,
+            Numeric = false,
+            ClearTextOnFocus = false,
+            Finished = true,
+            Placeholder = "github_pat_...",
+            Callback = function(Value)
+                FOtherSettings.cloud_sync_github_token = tostring(Value or "")
+                SaveDataOther(true)
+            end
+        })
+
+        gCloud:AddInput("cloudGistId", {
+            Text = "Gist ID (optional)",
+            Default = FOtherSettings.cloud_sync_gist_id,
+            Numeric = false,
+            ClearTextOnFocus = false,
+            Finished = true,
+            Placeholder = "Leave empty to create one",
+            Callback = function(Value)
+                FOtherSettings.cloud_sync_gist_id = tostring(Value or "")
+                SaveDataOther(true)
+            end
+        })
+
+        gCloud:AddButton({
+            Text = "☁️ Upload Config",
+            Func = function()
+                FableCloudPush(true)
+            end
+        })
+
+        gCloud:AddButton({
+            Text = "☁️ Download Config",
+            Func = function()
+                FableCloudPull(true)
+            end
+        })
+
+        gCloud:AddLabel({
+            Text = "The token and Gist ID are stored locally in your V51 config. Do not paste a token into a public config file or share it with others.",
+            DoesWrap = true
+        })
+    end
+
     ---- CONFIG delete #config
     if gConfig then
         gConfig:AddLabel({
-            Text = "<b>Portable Config</b>\nSave your FABLE settings to the workspace as <font color='#B188FF'>Fable_Config.json</font> so the file can be copied to another device.",
+            Text = "<b>Device Shared Config</b>\nFABLE settings are shared by all Roblox instances using this executor workspace on this device. Use <font color='#B188FF'>Fable_Config.json</font> to manually copy the config to another device.",
             DoesWrap = true
         })
 
@@ -50912,6 +51748,20 @@ function SettingsUi()
             FOtherSettings.is_playerstats_running = Value
             SaveDataOther()
             Library:Notify("Updated", 3)
+        end
+    })
+    GroupBoxOtherSettings:AddToggle("toggleCurrencyDisplay", {
+        Text = "💰 Live Currency Display",
+        Default = FOtherSettings.currency_display_enabled,
+        Tooltip = "Shows your live Sheckles and event/special currency balances.",
+        Callback = function(Value)
+            FOtherSettings.currency_display_enabled = Value
+            SaveDataOther()
+            if not Value then
+                CurrencyDisplayDestroyGui()
+            else
+                pcall(function() TaskManager.UpdateCurrencyDisplay() end)
+            end
         end
     })
     GroupBoxOtherSettings:AddDivider()
