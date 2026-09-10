@@ -1951,8 +1951,8 @@ local function updatePlayerStatusUIV52()
 
         local mainFrame = Instance.new("Frame", gui)
         mainFrame.Name = "MainFrame"
-        mainFrame.AnchorPoint = Vector2.new(0, 0.5)
-        mainFrame.Position = UDim2.new(0, 15, 0.3, 0)
+        mainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+        mainFrame.Position = UDim2.new(0.5, 0.5)
         mainFrame.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
         mainFrame.BackgroundTransparency = 1
         mainFrame.BorderSizePixel = 0
