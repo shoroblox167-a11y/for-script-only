@@ -1,8 +1,14 @@
 --[[
-    FABLE TRANSFER V3
+    FABLE TRANSFER V5
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
+
+    V5 additions:
+      • V52 Trade Pet Teams workflow restored for arimabns
+      • V52 TradeRequest ticket accept path restored
+      • V52 in-trade accept/confirm path restored
+      • Trade watchers operate independently of Auto Hatch
 
     Locked workflow:
       • Night Egg only
@@ -36,12 +42,12 @@
       Farm.Important.Objects_Physical / PetEgg attributes
 ]]
 
-if getgenv and getgenv().FABLE_TRANSFER_V3 then
-    warn("[FABLE TRANSFER V3] Already loaded.")
+if getgenv and getgenv().FABLE_TRANSFER_V5 then
+    warn("[FABLE TRANSFER V5] Already loaded.")
     return
 end
 if getgenv then
-    getgenv().FABLE_TRANSFER_V3 = true
+    getgenv().FABLE_TRANSFER_V5 = true
 end
 
 if not game:IsLoaded() then
@@ -61,7 +67,7 @@ end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V3] Unsupported game.")
+    warn("[FABLE TRANSFER V5] Unsupported game.")
     return
 end
 
@@ -74,12 +80,21 @@ local PetsService = GameEvents:WaitForChild("PetsService")
 local PetEggService = GameEvents:WaitForChild("PetEggService")
 local AddItemRemote = GameEvents:WaitForChild("TradeEvents"):WaitForChild("AddItem")
 local UnlockSlotRemote = GameEvents:WaitForChild("UnlockSlotFromPet")
+local FavoriteItemRemote = GameEvents:FindFirstChild("Favorite_Item")
+local PetCooldownsUpdatedRemote = GameEvents:FindFirstChild("PetCooldownsUpdated")
+
+local okPetUtilities, PetUtilities = pcall(function()
+    return require(ReplicatedStorage.Modules.PetServices.PetUtilities)
+end)
+if not okPetUtilities then
+    PetUtilities = nil
+end
 
 local okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V3] Failed to require DataService.")
+    warn("[FABLE TRANSFER V5] Failed to require DataService.")
     return
 end
 
@@ -87,7 +102,7 @@ local okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V3] Failed to require PetGiftingService.")
+    warn("[FABLE TRANSFER V5] Failed to require PetGiftingService.")
     return
 end
 
@@ -172,6 +187,13 @@ local State = {
     playerStatsLabels = {},
     activePetsGui = nil,
     activePetsLabel = nil,
+
+    autoAssignTeamsEnabled = true,
+    reductionTeam = {},
+    koiTeam = {},
+    hatching = false,
+    cooldownPets = {},
+    activePetsCacheUI = {},
 
     character = LocalPlayer.Character,
     humanoid = nil,
@@ -616,6 +638,40 @@ local function buildKoiTeam()
     return team
 end
 
+---------------------------------------------------------------------
+-- V52 FAVORITE HELPER
+---------------------------------------------------------------------
+
+local function isPetFavorite(tool)
+    return tool and tool:GetAttribute("d") == true
+end
+
+local function togglePetFavorite(tool)
+    if not tool or not FavoriteItemRemote then
+        return false
+    end
+    return pcall(function()
+        FavoriteItemRemote:FireServer(tool)
+    end)
+end
+
+local function unfavoriteTransferTeamsBeforeTrade()
+    pcall(refreshAutoAssignedTeams)
+
+    local teams = { State.reductionTeam, State.koiTeam }
+    for _, team in ipairs(teams) do
+        if type(team) == "table" then
+            for _, uuid in ipairs(team) do
+                local petTool = getToolByPetUUID(uuid)
+                if petTool and isPetFavorite(petTool) then
+                    togglePetFavorite(petTool)
+                    task.wait(0.1)
+                end
+            end
+        end
+    end
+end
+
 local function unequipAllGardenPets()
     local data = getData()
     local equipped = getEquippedPets(data)
@@ -679,8 +735,19 @@ local function equipGardenTeam(team, teamName)
     return true
 end
 
+local function refreshAutoAssignedTeams()
+    if not State.autoAssignTeamsEnabled then
+        return State.reductionTeam, State.koiTeam
+    end
+
+    State.reductionTeam = buildReductionTeam()
+    State.koiTeam = buildKoiTeam()
+    return State.reductionTeam, State.koiTeam
+end
+
 local function ensureReductionTeam()
-    local team = buildReductionTeam()
+    refreshAutoAssignedTeams()
+    local team = State.reductionTeam
     if #team == 0 then
         State.currentGardenTeamName = "Reduction"
         State.currentGardenTeam = {}
@@ -695,7 +762,8 @@ local function ensureReductionTeam()
 end
 
 local function ensureKoiTeam()
-    local team = buildKoiTeam()
+    refreshAutoAssignedTeams()
+    local team = State.koiTeam
     if #team == 0 then
         State.currentGardenTeamName = "Koi"
         State.currentGardenTeam = {}
@@ -708,6 +776,15 @@ local function ensureKoiTeam()
 
     return equipGardenTeam(team, "Koi")
 end
+
+Threads.autoAssignTeams = task.spawn(function()
+    while not State.shuttingDown do
+        if State.autoAssignTeamsEnabled then
+            pcall(refreshAutoAssignedTeams)
+        end
+        task.wait(0.5)
+    end
+end)
 
 ---------------------------------------------------------------------
 -- V52 AUTO-HATCH CORE (TRANSFER VERSION)
@@ -1080,31 +1157,40 @@ local function collectNightEggPetEntries()
 end
 
 local function findGiftTarget()
+    -- Hard-locked target.
     return Players:FindFirstChild(CONFIG.TARGET_GIFT_PLAYER)
 end
 
 local function fastGiftAllNightEggPets()
-    if State.autoGiftBusy or State.tradeBusy or not State.enabled or not State.autoGiftEnabled then
+    if State.autoGiftBusy or State.tradeBusy then
+        return
+    end
+
+    if State.hatching or not State.enabled or not State.autoGiftEnabled then
         return
     end
 
     local target = findGiftTarget()
     if not target then
-        State.lastStatus = "Waiting for mysto_sailor..."
         return
     end
 
     State.autoGiftBusy = true
 
     local ok, err = pcall(function()
-        while State.enabled and not State.tradeBusy do
+        while State.enabled
+            and State.autoGiftEnabled
+            and not State.tradeBusy
+            and not State.hatching
+            and not State.shuttingDown
+        do
             local pets = collectNightEggPetEntries()
             if #pets == 0 then
                 break
             end
 
             for _, pet in ipairs(pets) do
-                if not State.enabled or State.tradeBusy then
+                if not State.enabled or State.tradeBusy or State.hatching then
                     break
                 end
 
@@ -1118,12 +1204,14 @@ local function fastGiftAllNightEggPets()
                     continue
                 end
 
-                -- Keep the target exact. Existing Night Egg pets are also valid;
-                -- there is intentionally no "freshly hatched" check here.
                 unequipTools()
-                equipTool(tool)
+                if not equipTool(tool) then
+                    continue
+                end
 
-                State.lastStatus = "Fast gifting " .. tostring(pet.petType) .. "..."
+                State.lastStatus = "⚡ Rapid Gift → "
+                    .. CONFIG.TARGET_GIFT_PLAYER
+                    .. " • " .. tostring(pet.petType)
 
                 pcall(function()
                     PetGiftingService:GivePet(currentTarget)
@@ -1138,12 +1226,30 @@ local function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V3] Gift error:", err)
+        warn("[FABLE TRANSFER V5] Gift error:", err)
     end
 
     State.autoGiftBusy = false
 end
 
+Threads.rapidGift = task.spawn(function()
+    while not State.shuttingDown do
+        -- V52 GiftSystem is gated by the actual hatching flag, not by the
+        -- outer hatch-loop/cycle flag. This keeps Rapid Gift alive while
+        -- eggs are reducing/waiting, but stops it during the hatch phase.
+        if State.enabled
+            and State.autoGiftEnabled
+            and not State.hatching
+            and not State.tradeBusy
+            and not State.autoGiftBusy
+        then
+            pcall(fastGiftAllNightEggPets)
+        end
+        task.wait(0.1)
+    end
+end)
+
+---------------------------------------------------------------------
 ---------------------------------------------------------------------
 -- AUTO PET SLOT
 ---------------------------------------------------------------------
@@ -1249,10 +1355,15 @@ local function textContainsTarget(root, target)
 
     local wanted = tostring(target):lower()
 
+    if root:IsA("TextLabel") or root:IsA("TextButton") or root:IsA("TextBox") then
+        if tostring(root.Text or ""):lower():find(wanted, 1, true) then
+            return true
+        end
+    end
+
     for _, obj in ipairs(root:GetDescendants()) do
         if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
-            local text = tostring(obj.Text or ""):lower()
-            if text:find(wanted, 1, true) then
+            if tostring(obj.Text or ""):lower():find(wanted, 1, true) then
                 return true
             end
         end
@@ -1261,18 +1372,76 @@ local function textContainsTarget(root, target)
     return false
 end
 
+local function getPlayerGui()
+    return LocalPlayer:FindFirstChild("PlayerGui")
+end
+
+local function getTradingUI()
+    local gui = getPlayerGui()
+    return gui and gui:FindFirstChild("TradingUI")
+end
+
+-- V52 TradeSystem.IsTradeActive()
+local function isTradeUIActive()
+    local ui = getTradingUI()
+    return ui ~= nil and ui.Enabled == true
+end
+
+-- V52 TradeSystem.OtherPlayerReady()
+local function otherPlayerReady()
+    local ui = getTradingUI()
+    if not ui then
+        return false
+    end
+
+    local liveTrade = ui:FindFirstChild("LiveTrade")
+    local other = liveTrade and liveTrade:FindFirstChild("OtherPlr")
+    local ready = other and other:FindFirstChild("Ready")
+
+    if not ready then
+        return false
+    end
+
+    local transparency = tonumber(ready.BackgroundTransparency)
+    return transparency ~= nil and transparency < 1
+end
+
+-- V52 TradeSystem.MyAddedItemsCount()
+local function myTradeItemCount()
+    local ui = getTradingUI()
+    local liveTrade = ui and ui:FindFirstChild("LiveTrade")
+    local myPlr = liveTrade and liveTrade:FindFirstChild("MyPlr")
+    local scroll = myPlr and myPlr:FindFirstChild("ScrollingFrame")
+
+    if not scroll then
+        return 0
+    end
+
+    local count = 0
+    for _, item in ipairs(scroll:GetChildren()) do
+        if item:IsA("ImageButton") and item.Name == "ItemTemplate" then
+            count += 1
+        end
+    end
+
+    return count
+end
+
+-- V52 exact ticket path:
+-- Gift_Notification -> Frame -> TradeRequest -> Wrapper -> Canvas ->
+-- Segment -> Buttons -> ACCEPT_BUTTON -> Main -> SENSOR
 local function isArimabnsTradeRequestVisible()
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not playerGui then
+    local gui = getPlayerGui()
+    if not gui then
         return false
     end
 
-    local notification = playerGui:FindFirstChild("Gift_Notification")
-    if not notification or notification.Enabled == false then
+    local notif = gui:FindFirstChild("Gift_Notification")
+    if not notif or not notif.Enabled then
         return false
     end
 
-    local frame = notification:FindFirstChild("Frame")
+    local frame = notif:FindFirstChild("Frame")
     if not frame then
         return false
     end
@@ -1286,25 +1455,22 @@ local function isArimabnsTradeRequestVisible()
 end
 
 local function clickTradeRequestAccept()
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not playerGui then
+    local gui = getPlayerGui()
+    if not gui then
         return false
     end
 
-    local notification = playerGui:FindFirstChild("Gift_Notification")
-    if not notification then
+    local notif = gui:FindFirstChild("Gift_Notification")
+    if not notif or not notif.Enabled then
         return false
     end
 
-    local frame = notification:FindFirstChild("Frame")
+    local frame = notif:FindFirstChild("Frame")
     local tradeReq = frame and frame:FindFirstChild("TradeRequest")
     if not tradeReq then
         return false
     end
 
-    -- Exact V53 path:
-    -- TradeRequest -> Wrapper -> Canvas -> Segment -> Buttons ->
-    -- ACCEPT_BUTTON -> Main -> SENSOR
     local wrapper = tradeReq:FindFirstChild("Wrapper")
     local canvas = wrapper and wrapper:FindFirstChild("Canvas")
     local segment = canvas and canvas:FindFirstChild("Segment")
@@ -1345,77 +1511,18 @@ local function clickTradeRequestAccept()
     return didClick
 end
 
-local function isTradeUIActive()
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    local tradingUI = playerGui and playerGui:FindFirstChild("TradingUI")
-    return tradingUI ~= nil and tradingUI.Enabled == true
-end
-
-local function isActiveTradeArimabns()
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    local tradingUI = playerGui and playerGui:FindFirstChild("TradingUI")
-    if not tradingUI then
-        return false
-    end
-
-    -- Prefer exact UI text. We also retain State.acceptedArimabnsRequest
-    -- after we accepted a verified arimabns request.
-    if textContainsTarget(tradingUI, CONFIG.TARGET_TRADE_PLAYER) then
-        return true
-    end
-
-    return State.acceptedArimabnsRequest and tradingUI.Enabled == true
-end
-
-local function otherPlayerReady()
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    local tradingUI = playerGui and playerGui:FindFirstChild("TradingUI")
-    if not tradingUI then
-        return false
-    end
-
-    local liveTrade = tradingUI:FindFirstChild("LiveTrade")
-    local other = liveTrade and liveTrade:FindFirstChild("OtherPlr")
-    local ready = other and other:FindFirstChild("Ready")
-
-    if ready then
-        return (tonumber(ready.BackgroundTransparency) or 1) < 1
-    end
-
-    return false
-end
-
-local function myTradeItemCount()
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    local tradingUI = playerGui and playerGui:FindFirstChild("TradingUI")
-    local liveTrade = tradingUI and tradingUI:FindFirstChild("LiveTrade")
-    local myPlr = liveTrade and liveTrade:FindFirstChild("MyPlr")
-    local scrolling = myPlr and myPlr:FindFirstChild("ScrollingFrame")
-
-    if not scrolling then
-        return 0
-    end
-
-    local count = 0
-    for _, item in ipairs(scrolling:GetChildren()) do
-        if item:IsA("ImageButton") and item.Name == "ItemTemplate" then
-            count += 1
-        end
-    end
-
-    return count
-end
-
+-- V52 exact in-trade Accept path:
+-- TradingUI -> LiveTrade -> Options -> Accept
 local function clickTradeAccept()
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    local tradingUI = playerGui and playerGui:FindFirstChild("TradingUI")
-    if not tradingUI or not tradingUI.Enabled then
+    local ui = getTradingUI()
+    if not ui or not ui.Enabled then
         return false
     end
 
-    local liveTrade = tradingUI:FindFirstChild("LiveTrade")
+    local liveTrade = ui:FindFirstChild("LiveTrade")
     local options = liveTrade and liveTrade:FindFirstChild("Options")
     local acceptBtn = options and options:FindFirstChild("Accept")
+
     if not acceptBtn then
         return false
     end
@@ -1448,18 +1555,42 @@ local function clickTradeAccept()
     return didClick
 end
 
+local function isActiveTradeArimabns()
+    local ui = getTradingUI()
+    if not ui then
+        return false
+    end
+
+    if textContainsTarget(ui, CONFIG.TARGET_TRADE_PLAYER) then
+        return true
+    end
+
+    return State.acceptedArimabnsRequest and ui.Enabled == true
+end
+
+-- The transfer has two garden teams. Preserve V52's ordering:
+-- Egg Reduction -> Koi. Add up to the game's 12-trade-item limit.
 local function getTradeTeamUUIDs()
     local seen = {}
     local result = {}
 
-    local reduction = buildReductionTeam()
-    local koi = buildKoiTeam()
+    refreshAutoAssignedTeams()
+    local orderedTeams = {
+        State.reductionTeam,
+        State.koiTeam,
+    }
 
-    for _, team in ipairs({ reduction, koi }) do
-        for _, uuid in ipairs(team) do
-            if uuid and not seen[uuid] then
-                seen[uuid] = true
-                table.insert(result, uuid)
+    for _, team in ipairs(orderedTeams) do
+        if type(team) == "table" then
+            for _, uuid in ipairs(team) do
+                if uuid and not seen[uuid] then
+                    seen[uuid] = true
+                    table.insert(result, uuid)
+
+                    if #result >= 12 then
+                        return result
+                    end
+                end
             end
         end
     end
@@ -1467,123 +1598,175 @@ local function getTradeTeamUUIDs()
     return result
 end
 
+-- V52 Trade Pet Teams: add the assigned team pets to the active trade,
+-- one by one, checking for the live inventory tool before AddItem.
 local function addTradePetTeams()
-    if not State.tradePetTeamsEnabled then
+    if myTradeItemCount() >= 12 then
         return
     end
 
-    local teamUUIDs = getTradeTeamUUIDs()
-
-    for _, uuid in ipairs(teamUUIDs) do
+    for _, uuid in ipairs(getTradeTeamUUIDs()) do
         if myTradeItemCount() >= 12 then
             break
         end
 
-        if getToolByPetUUID(uuid) then
-            pcall(function()
-                AddItemRemote:FireServer("Pet", uuid)
-            end)
-            task.wait(0.06)
+        if not getToolByPetUUID(uuid) then
+            continue
         end
+
+        pcall(function()
+            AddItemRemote:FireServer("Pet", uuid)
+        end)
+
+        task.wait(0.1)
     end
 end
 
+-- Full V52-style arimabns trade lifecycle, specialized to this project:
+-- ticket -> unfavorite transfer pets -> unequip garden team -> accept ticket ->
+-- add transfer teams -> target ready -> accept/confirm -> restore garden team.
 local function handleArimabnsTrade()
-    if State.tradeBusy or not State.enabled then
-        return false
-    end
-
-    if not isArimabnsTradeRequestVisible() then
+    if State.tradeBusy or not isArimabnsTradeRequestVisible() then
         return false
     end
 
     State.tradeBusy = true
-    State.lastStatus = "arimabns trade request detected."
+    State.lastStatus = "🎟️ arimabns trade ticket detected."
 
-    -- Save exactly what the transfer loop had in the garden.
     local savedTeamName = State.currentGardenTeamName
     local savedTeam = table.clone(State.currentGardenTeam)
 
-    -- Requirement: remove garden team BEFORE accepting the request.
-    unequipAllGardenPets()
+    -- V52 Trade Pet Teams removes favorites from assigned trade-team pets.
+    pcall(unfavoriteTransferTeamsBeforeTrade)
+    task.wait(0.1)
+
+    -- User-required ordering: team is unequipped BEFORE ticket acceptance.
+    pcall(unequipAllGardenPets)
     State.currentGardenTeamName = nil
     State.currentGardenTeam = {}
+    task.wait(0.1)
 
-    task.wait(0.08)
-
-    local acceptedRequest = clickTradeRequestAccept()
-    if acceptedRequest then
-        State.acceptedArimabnsRequest = true
-    end
-
-    if not acceptedRequest then
-        State.lastStatus = "Could not accept arimabns request."
+    -- Ticket acceptance is hard-locked by isArimabnsTradeRequestVisible().
+    local acceptedTicket = clickTradeRequestAccept()
+    if not acceptedTicket then
+        State.lastStatus = "❌ Failed to accept arimabns trade ticket."
         State.tradeBusy = false
-        State.acceptedArimabnsRequest = false
+
         if savedTeamName and #savedTeam > 0 then
-            equipGardenTeam(savedTeam, savedTeamName)
+            pcall(function()
+                equipGardenTeam(savedTeam, savedTeamName)
+            end)
         end
+
         return false
     end
 
-    -- Wait for the actual trade UI.
-    local deadline = os.clock() + 5
-    while State.enabled and os.clock() < deadline do
+    State.acceptedArimabnsRequest = true
+    State.lastStatus = "✅ arimabns ticket accepted."
+
+    -- Wait for the live TradingUI.
+    local waitDeadline = os.clock() + 6
+    while os.clock() < waitDeadline do
         if isTradeUIActive() and isActiveTradeArimabns() then
             break
         end
         task.wait(0.08)
     end
 
-    if State.enabled and isTradeUIActive() and isActiveTradeArimabns() then
-        State.lastStatus = "arimabns trade active. Adding Trade Pet Teams..."
+    if not (isTradeUIActive() and isActiveTradeArimabns()) then
+        State.lastStatus = "❌ TradingUI not detected after arimabns ticket."
+        State.acceptedArimabnsRequest = false
+        State.tradeBusy = false
 
-        addTradePetTeams()
-
-        -- Accept/confirm automatically. We wait for the other side to be ready,
-        -- but also keep trying periodically because the game's UI can switch
-        -- between staged accept buttons.
-        local tradeDeadline = os.clock() + 25
-        while State.enabled and isTradeUIActive() and os.clock() < tradeDeadline do
-            if not isActiveTradeArimabns() then
-                break
-            end
-
-            if otherPlayerReady() or myTradeItemCount() > 0 then
-                clickTradeAccept()
-            end
-
-            task.wait(0.35)
+        if savedTeamName and #savedTeam > 0 then
+            pcall(function()
+                equipGardenTeam(savedTeam, savedTeamName)
+            end)
         end
-    else
-        State.lastStatus = "arimabns request accepted; waiting for trade UI..."
+
+        return false
+    end
+
+    State.lastStatus = "🤝 Adding Transfer Pet Teams to arimabns..."
+    pcall(addTradePetTeams)
+
+    -- V52: once the other player is ready, press the in-trade Accept.
+    local confirmDeadline = os.clock() + 30
+    while isTradeUIActive()
+        and isActiveTradeArimabns()
+        and os.clock() < confirmDeadline
+    do
+        if otherPlayerReady() then
+            pcall(clickTradeAccept)
+            break
+        end
+
+        task.wait(0.1)
+    end
+
+    -- V52's trade loop performs another accept after the items have been added.
+    task.wait(1)
+    if isTradeUIActive() and isActiveTradeArimabns() then
+        pcall(clickTradeAccept)
+    end
+
+    -- Wait briefly for the trade to close/complete before restoring the team.
+    local closeDeadline = os.clock() + 5
+    while isTradeUIActive() and os.clock() < closeDeadline do
+        task.wait(0.1)
     end
 
     State.acceptedArimabnsRequest = false
     State.lastTradeHandledAt = os.clock()
 
-    -- Restore the garden team that was active before the trade.
-    if State.enabled then
-        if savedTeamName and #savedTeam > 0 then
+    if savedTeamName and #savedTeam > 0 then
+        pcall(function()
             equipGardenTeam(savedTeam, savedTeamName)
-        else
-            -- Rebuild the correct default phase if no snapshot was available.
-            ensureReductionTeam()
-        end
+        end)
     end
 
     State.tradeBusy = false
-    State.lastStatus = "Trade complete. Resuming transfer."
+    State.lastStatus = "✅ arimabns trade handled. Resuming transfer."
     return true
 end
 
+-- V52-style independent ticket watcher. This stays alive even when the
+-- Auto Hatch toggle is OFF.
+Threads.tradeTicketWatcher = task.spawn(function()
+    while not State.shuttingDown do
+        task.wait(0.15)
+
+        if not State.tradeBusy and isArimabnsTradeRequestVisible() then
+            pcall(handleArimabnsTrade)
+        end
+    end
+end)
+
+-- Independent final accept/confirm watcher.
+Threads.tradeConfirmWatcher = task.spawn(function()
+    while not State.shuttingDown do
+        task.wait(0.1)
+
+        if not State.tradeBusy
+            and isTradeUIActive()
+            and isActiveTradeArimabns()
+        then
+            pcall(function()
+                if otherPlayerReady() then
+                    clickTradeAccept()
+                end
+            end)
+        end
+    end
+end)
+
 ---------------------------------------------------------------------
 
 ---------------------------------------------------------------------
--- V52-DERIVED PLAYER STATS / ACTIVE PETS DISPLAY
+-- V52 PLAYER STATS + ACTIVE PETS UI
 ---------------------------------------------------------------------
 
-local PLAYER_STAT_KEYS = {
+local PLAYER_SECRETS = {
     "EggRecoveryChance",
     "PetSellEggRefundChance",
     "PetEggHatchAgeBonus",
@@ -1594,296 +1777,336 @@ local PLAYER_STAT_KEYS = {
     "Grow_Amount",
 }
 
-local function formatDuration(seconds)
-    seconds = math.max(0, math.floor(tonumber(seconds) or 0))
-
-    local hours = math.floor(seconds / 3600)
-    local minutes = math.floor((seconds % 3600) / 60)
-    local secs = seconds % 60
-
-    if hours > 0 then
-        return string.format("%dh %02dm %02ds", hours, minutes, secs)
-    elseif minutes > 0 then
-        return string.format("%dm %02ds", minutes, secs)
+local function shortNameNoDots(str, max)
+    str = tostring(str or "")
+    max = max or 3
+    if #str > max then
+        return str:sub(1, max)
     end
-
-    return string.format("%ds", secs)
+    return str
 end
 
-local function getPetDisplayData(uuid, data)
+local function fmtTimeV52(secs)
+    secs = math.max(0, tonumber(secs) or 0)
+    return string.format("%02d:%02d", math.floor(secs / 60), math.floor(secs % 60))
+end
+
+local function getRealPetWeightV52(baseWeight, level)
+    if not PetUtilities then
+        return tonumber(baseWeight) or 0
+    end
+    local ok, result = pcall(function()
+        return PetUtilities:CalculateWeight(baseWeight or 1, level or 1)
+    end)
+    if ok then
+        return tonumber(result) or tonumber(baseWeight) or 0
+    end
+    return tonumber(baseWeight) or 0
+end
+
+local function getPetEntryV5(uuid, data)
     local inventory = getPetInventory(data)
-    local entry = inventory and inventory[uuid]
+    return inventory and inventory[uuid]
+end
 
-    if not entry or not entry.PetData then
-        return tostring(uuid)
+if PetCooldownsUpdatedRemote then
+    Connections.petCooldowns = PetCooldownsUpdatedRemote.OnClientEvent:Connect(function(petId, cooldowns)
+        if type(petId) ~= "string" or type(cooldowns) ~= "table" then
+            return
+        end
+
+        local entry = getPetEntryV5(petId, getData())
+        local petName = entry and entry.PetType
+        if not petName then
+            return
+        end
+
+        local spells = {}
+        for _, datax in ipairs(cooldowns) do
+            if type(datax) == "table" then
+                table.insert(spells, {
+                    Name = petName,
+                    Passive = tostring(datax.Passive),
+                    Time = tonumber(datax.Time) or 0,
+                })
+            end
+        end
+        State.cooldownPets[petId] = spells
+    end)
+end
+
+local function getSkillCooldownTextV52(uuid)
+    local textValue = ""
+    local petInfo = State.cooldownPets[uuid]
+    if type(petInfo) ~= "table" then
+        return textValue
     end
 
-    local petData = entry.PetData
-    local petName = tostring(entry.PetType or petData.Name or "Unknown")
-    local level = tonumber(petData.Level) or 0
-    local weight = tonumber(petData.BaseWeight) or 0
-    local mutation = tostring(petData.MutationType or "")
-
-    if mutation ~= "" then
-        return string.format("%s  Lv.%d  %.2fkg  [%s]", petName, level, weight, mutation)
+    for _, info in ipairs(petInfo) do
+        if info.Name and info.Passive and info.Time ~= nil then
+            textValue = textValue .. " " .. string.format(
+                '%s:<font color="#A6FF00">%s</font>',
+                shortNameNoDots(info.Passive, 4),
+                fmtTimeV52(info.Time)
+            )
+        end
     end
-
-    return string.format("%s  Lv.%d  %.2fkg", petName, level, weight)
+    return textValue
 end
 
 local function destroyPlayerStatsGui()
     if State.playerStatsGui and State.playerStatsGui.Parent then
-        pcall(function()
-            State.playerStatsGui:Destroy()
-        end)
+        pcall(function() State.playerStatsGui:Destroy() end)
     end
-
     State.playerStatsGui = nil
     State.playerStatsLabels = {}
 end
 
-local function ensurePlayerStatsGui()
-    if State.playerStatsGui and State.playerStatsGui.Parent then
-        return
-    end
-
-    destroyPlayerStatsGui()
-
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not playerGui then
-        return
-    end
-
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "FableTransferPlayerStats"
-    gui.ResetOnSpawn = false
-    gui.DisplayOrder = 10000
-    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    gui.Parent = playerGui
-
-    local frame = Instance.new("Frame")
-    frame.Name = "StatsFrame"
-    frame.AutomaticSize = Enum.AutomaticSize.Y
-    frame.Size = UDim2.fromOffset(245, 0)
-    frame.Position = UDim2.fromOffset(12, 92)
-    frame.BackgroundColor3 = Color3.fromRGB(15, 12, 22)
-    frame.BackgroundTransparency = 0.10
-    frame.BorderSizePixel = 0
-    frame.Parent = gui
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = frame
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 1
-    stroke.Color = Color3.fromRGB(178, 105, 248)
-    stroke.Transparency = 0.35
-    stroke.Parent = frame
-
-    local padding = Instance.new("UIPadding")
-    padding.PaddingTop = UDim.new(0, 7)
-    padding.PaddingBottom = UDim.new(0, 7)
-    padding.PaddingLeft = UDim.new(0, 9)
-    padding.PaddingRight = UDim.new(0, 9)
-    padding.Parent = frame
-
-    local list = Instance.new("UIListLayout")
-    list.SortOrder = Enum.SortOrder.LayoutOrder
-    list.Padding = UDim.new(0, 2)
-    list.Parent = frame
-
-    local title = Instance.new("TextLabel")
-    title.BackgroundTransparency = 1
-    title.AutomaticSize = Enum.AutomaticSize.Y
-    title.Size = UDim2.new(1, 0, 0, 18)
-    title.Font = Enum.Font.GothamBold
-    title.Text = "FABLE • PLAYER STATS"
-    title.TextColor3 = Color3.fromRGB(231, 214, 255)
-    title.TextSize = 10
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.LayoutOrder = 0
-    title.Parent = frame
-
-    for index, key in ipairs(PLAYER_STAT_KEYS) do
-        local label = Instance.new("TextLabel")
-        label.Name = key
-        label.BackgroundTransparency = 1
-        label.Size = UDim2.new(1, 0, 0, 17)
-        label.Font = Enum.Font.SourceSans
-        label.Text = key .. ": 0"
-        label.TextColor3 = Color3.fromRGB(220, 216, 226)
-        label.TextSize = 9
-        label.TextXAlignment = Enum.TextXAlignment.Left
-        label.LayoutOrder = index
-        label.Parent = frame
-
-        State.playerStatsLabels[key] = label
-    end
-
-    State.playerStatsGui = gui
-end
-
-local function updatePlayerStatsGui(data)
+local function updatePlayerStatusUIV52()
     if not State.playerStatsEnabled then
         destroyPlayerStatsGui()
         return
     end
 
-    ensurePlayerStatsGui()
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then return end
 
-    local playerStatsLabels = State.playerStatsLabels
-    if not playerStatsLabels or not next(playerStatsLabels) then
-        return
+    if not State.playerStatsGui or not State.playerStatsGui.Parent then
+        State.playerStatsLabels = {}
+
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "SecretStatsGui"
+        gui.ResetOnSpawn = false
+        gui.DisplayOrder = 2
+
+        local mainFrame = Instance.new("Frame", gui)
+        mainFrame.Name = "MainFrame"
+        mainFrame.AnchorPoint = Vector2.new(0, 0.5)
+        mainFrame.Position = UDim2.new(0, 15, 0.3, 0)
+        mainFrame.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+        mainFrame.BackgroundTransparency = 1
+        mainFrame.BorderSizePixel = 0
+        mainFrame.AutomaticSize = Enum.AutomaticSize.Y
+        Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 8)
+
+        local padding = Instance.new("UIPadding", mainFrame)
+        padding.PaddingLeft = UDim.new(0, 10)
+        padding.PaddingRight = UDim.new(0, 10)
+        padding.PaddingTop = UDim.new(0, 10)
+        padding.PaddingBottom = UDim.new(0, 10)
+
+        local listLayout = Instance.new("UIListLayout", mainFrame)
+        listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        listLayout.Padding = UDim.new(0, 4)
+
+        for order, key in ipairs(PLAYER_SECRETS) do
+            local label = Instance.new("TextLabel", mainFrame)
+            label.Name = key
+            label.Text = key .. ": 0.00"
+            label.Font = Enum.Font.SourceSans
+            label.TextSize = 17
+            label.TextColor3 = Color3.new(1, 1, 1)
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.BackgroundTransparency = 1
+            label.Size = UDim2.new(1, 0, 0, 18)
+            label.RichText = true
+            label.LayoutOrder = order
+
+            local outline = Instance.new("UIStroke", label)
+            outline.Color = Color3.new(0, 0, 0)
+            outline.Thickness = 1
+
+            State.playerStatsLabels[key] = label
+        end
+
+        gui.Parent = playerGui
+        State.playerStatsGui = gui
     end
 
-    for _, key in ipairs(PLAYER_STAT_KEYS) do
-        local label = playerStatsLabels[key]
+    for _, key in ipairs(PLAYER_SECRETS) do
+        local label = State.playerStatsLabels[key]
         if label then
             local value = LocalPlayer:GetAttribute(key)
-            if value == nil then
-                value = 0
-            end
+            if value == nil then value = 0 end
 
-            local formatted
+            local formattedValue = typeof(value) == "number"
+                and string.format("%.2f", value)
+                or tostring(value)
+
             if key == "SessionTime" then
-                formatted = formatDuration(value)
-            elseif typeof(value) == "number" then
-                formatted = string.format("%.2f", value)
-            else
-                formatted = tostring(value)
+                formattedValue = fmtTimeV52(value)
             end
 
-            label.Text = key .. ": " .. formatted
+            if formattedValue == "0.00" then
+                label.Text = key .. ": " .. formattedValue
+            else
+                label.Text = key .. ': <b><font color="#FF7800">'
+                    .. formattedValue .. "</font></b>"
+            end
         end
     end
 end
 
 local function destroyActivePetsGui()
     if State.activePetsGui and State.activePetsGui.Parent then
-        pcall(function()
-            State.activePetsGui:Destroy()
-        end)
+        pcall(function() State.activePetsGui:Destroy() end)
     end
-
     State.activePetsGui = nil
     State.activePetsLabel = nil
 end
 
-local function ensureActivePetsGui()
-    if State.activePetsGui and State.activePetsGui.Parent and State.activePetsLabel then
-        return
+local function makeActivePetUiV52(data)
+    local activeList = getEquippedPets(data)
+    local now = os.time()
+    local currentUUIDs = {}
+
+    for _, uuid in ipairs(activeList) do
+        currentUUIDs[uuid] = true
     end
 
-    destroyActivePetsGui()
+    for _, uuid in ipairs(activeList) do
+        local entry = getPetEntryV5(uuid, data)
+        if entry and entry.PetData then
+            local petData = entry.PetData
+            local petType = entry.PetType or "Unknown"
+            local level = tonumber(petData.Level) or 1
+            local baseWeight = tonumber(petData.BaseWeight) or 0
+            local realWeight = getRealPetWeightV52(baseWeight, 1)
+            local skillInfo = getSkillCooldownTextV52(uuid)
 
-    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not playerGui then
-        return
+            local levelColor = level >= 100 and "#FFD700"
+                or (level >= 50 and "#66BB6A" or "#FF1100")
+
+            local levelDisplay = string.format('<font color="%s">Lv.%d</font>', levelColor, level)
+
+            local info = string.format(
+                '<stroke th="1" joins="round" sizing="fixed" color="#000000"><font color="#E800FF">[%.2fKG]</font></stroke> ' ..
+                '<stroke th="0.9" joins="round" sizing="fixed" color="#000000">%s <font color="#FFFFFF">%s</font> %s</stroke>',
+                realWeight, levelDisplay, shortNameNoDots(petType, 9), skillInfo
+            )
+
+            State.activePetsCacheUI[uuid] = {
+                info = info,
+                removedAt = nil,
+                sortLevel = level,
+                sortName = petType,
+            }
+        end
     end
 
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "FableTransferActivePets"
-    gui.ResetOnSpawn = false
-    gui.DisplayOrder = 10000
-    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    gui.Parent = playerGui
+    for uuid, cacheEntry in pairs(State.activePetsCacheUI) do
+        if not currentUUIDs[uuid] and not cacheEntry.removedAt then
+            cacheEntry.removedAt = now
+        end
+    end
 
-    local frame = Instance.new("Frame")
-    frame.Name = "ActivePetsFrame"
-    frame.AutomaticSize = Enum.AutomaticSize.Y
-    frame.Size = UDim2.fromOffset(275, 0)
-    frame.AnchorPoint = Vector2.new(1, 0.5)
-    frame.Position = UDim2.new(1, -12, 0.5, 0)
-    frame.BackgroundColor3 = Color3.fromRGB(15, 12, 22)
-    frame.BackgroundTransparency = 0.10
-    frame.BorderSizePixel = 0
-    frame.Parent = gui
+    local removeList = {}
+    local sortingList = {}
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = frame
+    for uuid, cacheEntry in pairs(State.activePetsCacheUI) do
+        local shouldShow = false
+        local finalString = ""
 
-    local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 1
-    stroke.Color = Color3.fromRGB(178, 105, 248)
-    stroke.Transparency = 0.35
-    stroke.Parent = frame
+        if cacheEntry.removedAt then
+            if now - cacheEntry.removedAt > 2 then
+                table.insert(removeList, uuid)
+            else
+                finalString = '<font color="#FF2A00">' .. cacheEntry.info .. "</font>"
+                shouldShow = true
+            end
+        else
+            finalString = cacheEntry.info
+            shouldShow = true
+        end
 
-    local padding = Instance.new("UIPadding")
-    padding.PaddingTop = UDim.new(0, 7)
-    padding.PaddingBottom = UDim.new(0, 7)
-    padding.PaddingLeft = UDim.new(9, 0)
-    padding.PaddingRight = UDim.new(9, 0)
-    padding.Parent = frame
+        if shouldShow then
+            table.insert(sortingList, {
+                str = finalString,
+                lvl = cacheEntry.sortLevel or 0,
+                name = cacheEntry.sortName or "",
+            })
+        end
+    end
 
-    local list = Instance.new("UIListLayout")
-    list.SortOrder = Enum.SortOrder.LayoutOrder
-    list.Padding = UDim.new(0, 2)
-    list.Parent = frame
+    table.sort(sortingList, function(a, b)
+        if a.lvl ~= b.lvl then return a.lvl > b.lvl end
+        return a.name < b.name
+    end)
 
-    local title = Instance.new("TextLabel")
-    title.BackgroundTransparency = 1
-    title.Size = UDim2.new(1, 0, 0, 18)
-    title.Font = Enum.Font.GothamBold
-    title.Text = "FABLE • ACTIVE PETS"
-    title.TextColor3 = Color3.fromRGB(231, 214, 255)
-    title.TextSize = 10
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.LayoutOrder = 0
-    title.Parent = frame
+    for _, uuid in ipairs(removeList) do
+        State.activePetsCacheUI[uuid] = nil
+    end
 
-    local label = Instance.new("TextLabel")
-    label.Name = "ActivePetsDisplay"
-    label.BackgroundTransparency = 1
-    label.AutomaticSize = Enum.AutomaticSize.Y
-    label.Size = UDim2.new(1, 0, 0, 18)
-    label.Font = Enum.Font.SourceSansBold
-    label.Text = "No active pets."
-    label.TextColor3 = Color3.fromRGB(225, 220, 235)
-    label.TextSize = 9
-    label.TextWrapped = true
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.TextYAlignment = Enum.TextYAlignment.Top
-    label.LayoutOrder = 1
-    label.Parent = frame
-
-    State.activePetsGui = gui
-    State.activePetsLabel = label
+    local lines = {}
+    for _, item in ipairs(sortingList) do
+        table.insert(lines, item.str)
+    end
+    return lines
 end
 
-local function updateActivePetsGui(data)
+local function updateActivePetsUIV52(data)
     if not State.activePetsUIEnabled then
         destroyActivePetsGui()
         return
     end
 
-    ensureActivePetsGui()
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then return end
 
-    if not State.activePetsLabel then
-        return
+    if not State.activePetsGui or not State.activePetsGui.Parent then
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "ActivePetsUI"
+        gui.ResetOnSpawn = false
+        gui.DisplayOrder = 2
+
+        local frame = Instance.new("Frame", gui)
+        frame.Name = "ActivePets"
+        frame.AnchorPoint = Vector2.new(1, 0)
+        frame.Position = UDim2.new(1, -15, 0.18, 0)
+        frame.Size = UDim2.fromOffset(260, 32)
+        frame.BackgroundTransparency = 1
+        frame.BorderSizePixel = 0
+        frame.AutomaticSize = Enum.AutomaticSize.Y
+
+        local label = Instance.new("TextLabel", frame)
+        label.Name = "ActivePetsText"
+        label.BackgroundTransparency = 1
+        label.Size = UDim2.new(1, 0, 0, 20)
+        label.AutomaticSize = Enum.AutomaticSize.Y
+        label.Font = Enum.Font.SourceSans
+        label.TextSize = 17
+        label.TextColor3 = Color3.new(1, 1, 1)
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.TextYAlignment = Enum.TextYAlignment.Top
+        label.TextWrapped = true
+        label.RichText = true
+
+        local outline = Instance.new("UIStroke", label)
+        outline.Color = Color3.new(0, 0, 0)
+        outline.Thickness = 1
+
+        gui.Parent = playerGui
+        State.activePetsGui = gui
+        State.activePetsLabel = label
     end
 
-    local lines = {}
-    local equipped = getEquippedPets(data)
-
-    for index, uuid in ipairs(equipped) do
-        if index > CONFIG.TEAM_SLOTS then
-            break
-        end
-
-        if uuid then
-            table.insert(lines, string.format("%d. %s", index, getPetDisplayData(uuid, data)))
-        end
-    end
-
-    if #lines == 0 then
-        State.activePetsLabel.Text = "No active pets."
-    else
-        State.activePetsLabel.Text = table.concat(lines, "\n")
-    end
+    local lines = makeActivePetUiV52(data)
+    State.activePetsLabel.Text = (#lines > 0) and table.concat(lines, "\n") or ""
+    State.activePetsLabel.Visible = #lines > 0
 end
 
+Threads.v52StatsUI = task.spawn(function()
+    while not State.shuttingDown do
+        task.wait(0.5)
+        pcall(updatePlayerStatusUIV52)
+        local data = getData()
+        if data then
+            pcall(function() updateActivePetsUIV52(data) end)
+        end
+    end
+end)
+
+---------------------------------------------------------------------
 -- COMPACT FABLE TAB UI
 ---------------------------------------------------------------------
 
@@ -1900,7 +2123,7 @@ end
 
 local uiParent = getUIParent()
 
-local oldUI = uiParent:FindFirstChild("FableTransferV3")
+local oldUI = uiParent:FindFirstChild("FableTransferV5")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
@@ -1908,7 +2131,7 @@ if oldUI then
 end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "FableTransferV3"
+ScreenGui.Name = "FableTransferV5"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.DisplayOrder = 9999
@@ -1944,7 +2167,7 @@ local Title = Instance.new("TextLabel")
 Title.BackgroundTransparency = 1
 Title.Size = UDim2.new(1, -38, 1, 0)
 Title.Font = Enum.Font.GothamBold
-Title.Text = "FABLE TRANSFER V3"
+Title.Text = "FABLE TRANSFER V5"
 Title.TextColor3 = Color3.fromRGB(231, 214, 255)
 Title.TextSize = 16
 Title.TextXAlignment = Enum.TextXAlignment.Left
@@ -2186,166 +2409,213 @@ statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.TextYAlignment = Enum.TextYAlignment.Center
 statusLabel.Parent = statusSection
 
+local updateTeamPage
+
 -- Pet Teams page.
-local teamTop = makeSection(TeamsPage, "CURRENT GARDEN TEAM", 0, 68)
+local teamTop = makeSection(TeamsPage, "AUTO ASSIGN • 8 SLOTS", 0, 58)
 
-local teamNameLabel = Instance.new("TextLabel")
-teamNameLabel.BackgroundTransparency = 1
-teamNameLabel.Position = UDim2.fromOffset(10, 24)
-teamNameLabel.Size = UDim2.new(1, -20, 0, 17)
-teamNameLabel.Font = Enum.Font.GothamBold
-teamNameLabel.Text = "None"
-teamNameLabel.TextColor3 = Color3.fromRGB(200, 165, 255)
-teamNameLabel.TextSize = 10
-teamNameLabel.TextXAlignment = Enum.TextXAlignment.Left
-teamNameLabel.Parent = teamTop
+local autoAssignToggle = makeToggle(
+    teamTop, 25, "Auto Assign Teams", State.autoAssignTeamsEnabled,
+    function(value)
+        State.autoAssignTeamsEnabled = value
+        if value then refreshAutoAssignedTeams() end
+        updateTeamPage()
+    end
+)
 
-local equippedLabel = Instance.new("TextLabel")
-equippedLabel.BackgroundTransparency = 1
-equippedLabel.Position = UDim2.fromOffset(10, 42)
-equippedLabel.Size = UDim2.new(1, -20, 0, 22)
-equippedLabel.Font = Enum.Font.Gotham
-equippedLabel.Text = "Equipped: None"
-equippedLabel.TextColor3 = Color3.fromRGB(155, 148, 170)
-equippedLabel.TextSize = 8
-equippedLabel.TextWrapped = true
-equippedLabel.TextXAlignment = Enum.TextXAlignment.Left
-equippedLabel.Parent = teamTop
-
-local reductionSection = makeSection(TeamsPage, "REDUCTION TEAM", 72, 58)
+local reductionSection = makeSection(TeamsPage, "EGG REDUCTION", 63, 72)
 local reductionLabel = Instance.new("TextLabel")
 reductionLabel.BackgroundTransparency = 1
-reductionLabel.Position = UDim2.fromOffset(10, 23)
-reductionLabel.Size = UDim2.new(1, -20, 0, 29)
+reductionLabel.Position = UDim2.fromOffset(8, 19)
+reductionLabel.Size = UDim2.new(1, -16, 0, 25)
 reductionLabel.Font = Enum.Font.Gotham
-reductionLabel.Text = "Birb  •  Rainbow Birb  •  Mimic Octopus"
+reductionLabel.Text = "Birb • Rainbow Birb • Mimic Octopus"
 reductionLabel.TextColor3 = Color3.fromRGB(205, 199, 215)
 reductionLabel.TextSize = 8
 reductionLabel.TextWrapped = true
 reductionLabel.TextXAlignment = Enum.TextXAlignment.Left
-reductionLabel.TextYAlignment = Enum.TextYAlignment.Center
 reductionLabel.Parent = reductionSection
 
-local koiSection = makeSection(TeamsPage, "KOI TEAM", 134, 58)
+local reductionSelect = Instance.new("TextButton")
+reductionSelect.Size = UDim2.new(0.5, -10, 0, 22)
+reductionSelect.Position = UDim2.new(0, 8, 1, -28)
+reductionSelect.BackgroundColor3 = Color3.fromRGB(38, 30, 48)
+reductionSelect.BorderSizePixel = 0
+reductionSelect.Font = Enum.Font.GothamSemibold
+reductionSelect.Text = "Select All Detected Pets"
+reductionSelect.TextColor3 = Color3.fromRGB(225, 220, 235)
+reductionSelect.TextSize = 8
+reductionSelect.Parent = reductionSection
+Instance.new("UICorner", reductionSelect).CornerRadius = UDim.new(0, 6)
+
+local reductionEquip = reductionSelect:Clone()
+reductionEquip.Position = UDim2.new(0.5, 2, 1, -28)
+reductionEquip.Text = "Equip"
+reductionEquip.Parent = reductionSection
+
+local koiSection = makeSection(TeamsPage, "KOI / RUBY", 140, 72)
 local koiLabel = Instance.new("TextLabel")
 koiLabel.BackgroundTransparency = 1
-koiLabel.Position = UDim2.fromOffset(10, 23)
-koiLabel.Size = UDim2.new(1, -20, 0, 29)
+koiLabel.Position = UDim2.fromOffset(8, 19)
+koiLabel.Size = UDim2.new(1, -16, 0, 25)
 koiLabel.Font = Enum.Font.Gotham
-koiLabel.Text = "1× Koi  •  Ruby Squid fills remaining slots"
+koiLabel.Text = "1× Koi • Ruby Squid fills remaining slots"
 koiLabel.TextColor3 = Color3.fromRGB(205, 199, 215)
 koiLabel.TextSize = 8
 koiLabel.TextWrapped = true
 koiLabel.TextXAlignment = Enum.TextXAlignment.Left
-koiLabel.TextYAlignment = Enum.TextYAlignment.Center
 koiLabel.Parent = koiSection
 
--- Settings page.
-local settingsHeader = makeSection(SettingsPage, "TRANSFER SETTINGS", 0, 30)
+local koiSelect = Instance.new("TextButton")
+koiSelect.Size = UDim2.new(0.5, -10, 0, 22)
+koiSelect.Position = UDim2.new(0, 8, 1, -28)
+koiSelect.BackgroundColor3 = Color3.fromRGB(38, 30, 48)
+koiSelect.BorderSizePixel = 0
+koiSelect.Font = Enum.Font.GothamSemibold
+koiSelect.Text = "Select All Detected Pets"
+koiSelect.TextColor3 = Color3.fromRGB(225, 220, 235)
+koiSelect.TextSize = 8
+koiSelect.Parent = koiSection
+Instance.new("UICorner", koiSelect).CornerRadius = UDim.new(0, 6)
 
-local settingsScroll = Instance.new("ScrollingFrame")
-settingsScroll.BackgroundTransparency = 1
-settingsScroll.Position = UDim2.fromOffset(0, 36)
-settingsScroll.Size = UDim2.new(1, 0, 1, -36)
-settingsScroll.BorderSizePixel = 0
-settingsScroll.ScrollBarThickness = 3
-settingsScroll.CanvasSize = UDim2.fromOffset(0, 0)
-settingsScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-settingsScroll.Parent = SettingsPage
+local koiEquip = koiSelect:Clone()
+koiEquip.Position = UDim2.new(0.5, 2, 1, -28)
+koiEquip.Text = "Equip"
+koiEquip.Parent = koiSection
+
+local teamStatus = makeSection(TeamsPage, "LIVE TEAM", 217, 49)
+local teamStatusLabel = Instance.new("TextLabel")
+teamStatusLabel.BackgroundTransparency = 1
+teamStatusLabel.Position = UDim2.fromOffset(8, 18)
+teamStatusLabel.Size = UDim2.new(1, -16, 0, 24)
+teamStatusLabel.Font = Enum.Font.GothamSemibold
+teamStatusLabel.Text = "Reduction 0/8 • Koi 0/8 • Active: None"
+teamStatusLabel.TextColor3 = Color3.fromRGB(205, 199, 215)
+teamStatusLabel.TextSize = 8
+teamStatusLabel.TextWrapped = true
+teamStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+teamStatusLabel.Parent = teamStatus
+
+local function selectAllDetectedReductionPets()
+    State.reductionTeam = buildReductionTeam()
+    State.lastStatus = string.format("✅ Reduction team: %d/8 detected.", #State.reductionTeam)
+    updateTeamPage()
+end
+
+local function selectAllDetectedKoiPets()
+    State.koiTeam = buildKoiTeam()
+    State.lastStatus = string.format("✅ Koi/Ruby team: %d/8 detected.", #State.koiTeam)
+    updateTeamPage()
+end
+
+reductionSelect.Activated:Connect(selectAllDetectedReductionPets)
+koiSelect.Activated:Connect(selectAllDetectedKoiPets)
+
+reductionEquip.Activated:Connect(function()
+    refreshAutoAssignedTeams()
+    if #State.reductionTeam > 0 then
+        equipGardenTeam(State.reductionTeam, "Reduction")
+    else
+        State.lastStatus = "❌ No Birb/Rainbow Birb/Mimic Octopus detected."
+    end
+end)
+
+koiEquip.Activated:Connect(function()
+    refreshAutoAssignedTeams()
+    if #State.koiTeam > 0 then
+        equipGardenTeam(State.koiTeam, "Koi")
+    else
+        State.lastStatus = "❌ No Koi/Ruby Squid detected."
+    end
+end)
+
+-- Settings page.
+local settingsHeader = makeSection(
+    SettingsPage,
+    "V52-STYLE SETTINGS • FIXED TRANSFER TARGETS",
+    0,
+    30
+)
 
 local settingsContent = Instance.new("Frame")
 settingsContent.BackgroundTransparency = 1
-settingsContent.Size = UDim2.new(1, -6, 0, 340)
-settingsContent.Parent = settingsScroll
+settingsContent.Position = UDim2.fromOffset(0, 36)
+settingsContent.Size = UDim2.new(1, 0, 1, -36)
+settingsContent.Parent = SettingsPage
 
-local fastPlacementToggle = makeToggle(
-    settingsContent, 0, "Fast Egg Placement", CONFIG.FAST_PLACEMENT,
-    function(value)
-        CONFIG.FAST_PLACEMENT = value
+local function makeGridToggle(parent, x, y, width, labelText, defaultValue, callback)
+    local control = makeToggle(parent, y, labelText, defaultValue, callback)
+    control.Button.Position = UDim2.fromOffset(x, y)
+    control.Button.Size = UDim2.fromOffset(width, 28)
+    return control
+end
+
+local gap = 6
+local halfWidth = math.floor((360 - gap) / 2)
+
+makeGridToggle(settingsContent, 0, 0, halfWidth, "Fast Egg Placement", CONFIG.FAST_PLACEMENT, function(v) CONFIG.FAST_PLACEMENT = v end)
+makeGridToggle(settingsContent, halfWidth + gap, 0, halfWidth, "Middle Eggs", CONFIG.MIDDLE_EGGS, function(v) CONFIG.MIDDLE_EGGS = v end)
+makeGridToggle(settingsContent, 0, 32, halfWidth, "Overdrive Mode", CONFIG.OVERDRIVE, function(v) CONFIG.OVERDRIVE = v end)
+makeGridToggle(settingsContent, halfWidth + gap, 32, halfWidth, "Ultra Mode", CONFIG.ULTRA, function(v) CONFIG.ULTRA = v end)
+
+makeGridToggle(settingsContent, 0, 64, halfWidth, "Rapid Gift → mysto_sailor", true, function(v) State.autoGiftEnabled = v end)
+local tradeTeamsToggle
+tradeTeamsToggle = makeGridToggle(settingsContent, halfWidth + gap, 64, halfWidth, "Trade Pet Teams", true, function(_v)
+    State.tradePetTeamsEnabled = true
+    if tradeTeamsToggle then
+        tradeTeamsToggle:Set(true, false)
     end
-)
+end)
 
-local middleEggToggle = makeToggle(
-    settingsContent, 32, "Middle Eggs", CONFIG.MIDDLE_EGGS,
-    function(value)
-        CONFIG.MIDDLE_EGGS = value
+local tradeAcceptToggle
+tradeAcceptToggle = makeGridToggle(settingsContent, 0, 96, halfWidth, "Accept Ticket → arimabns", true, function(_v)
+    if tradeAcceptToggle then
+        tradeAcceptToggle:Set(true, false)
     end
-)
+end)
 
-local overdriveToggle = makeToggle(
-    settingsContent, 64, "Overdrive Mode", CONFIG.OVERDRIVE,
-    function(value)
-        CONFIG.OVERDRIVE = value
+local autoSlotToggle = makeGridToggle(settingsContent, halfWidth + gap, 96, halfWidth, "Auto Pet Slot", State.autoPetSlotEnabled, function(v)
+    State.autoPetSlotEnabled = v
+    if v and State.enabled and not State.autoSlotBusy then startAutoPetSlot() end
+end)
+
+makeGridToggle(settingsContent, 0, 128, halfWidth, "Player Stats", State.playerStatsEnabled, function(v) State.playerStatsEnabled = v end)
+makeGridToggle(settingsContent, halfWidth + gap, 128, halfWidth, "Active Pets UI", State.activePetsUIEnabled, function(v) State.activePetsUIEnabled = v end)
+
+makeGridToggle(settingsContent, 0, 160, halfWidth, "Auto Assign Pet Teams", State.autoAssignTeamsEnabled, function(v)
+    State.autoAssignTeamsEnabled = v
+    if v then refreshAutoAssignedTeams() end
+    updateTeamPage()
+end)
+
+local favToggle
+favToggle = makeGridToggle(settingsContent, halfWidth + gap, 160, halfWidth, "Auto Favorite Hatch", false, function(_v)
+    if favToggle then
+        favToggle:Set(false, false)
     end
-)
+end)
 
-local ultraToggle = makeToggle(
-    settingsContent, 96, "Ultra Mode", CONFIG.ULTRA,
-    function(value)
-        CONFIG.ULTRA = value
-    end
-)
+local targetInfo = Instance.new("TextLabel")
+targetInfo.BackgroundTransparency = 1
+targetInfo.Position = UDim2.fromOffset(4, 194)
+targetInfo.Size = UDim2.new(1, -8, 0, 28)
+targetInfo.Font = Enum.Font.Gotham
+targetInfo.Text = "🎁 Gift: mysto_sailor   •   🎟️ Ticket: arimabns"
+targetInfo.TextColor3 = Color3.fromRGB(170, 162, 185)
+targetInfo.TextSize = 8
+targetInfo.TextXAlignment = Enum.TextXAlignment.Center
+targetInfo.Parent = settingsContent
 
-local giftToggle = makeToggle(
-    settingsContent, 128, "Fast Gift", State.autoGiftEnabled,
-    function(value)
-        State.autoGiftEnabled = value
-    end
-)
-
-local tradeTeamsToggle = makeToggle(
-    settingsContent, 160, "Trade Pet Teams", State.tradePetTeamsEnabled,
-    function(value)
-        State.tradePetTeamsEnabled = value
-    end
-)
-
-local autoSlotToggle = makeToggle(
-    settingsContent, 192, "Auto Pet Slot", State.autoPetSlotEnabled,
-    function(value)
-        State.autoPetSlotEnabled = value
-        if value and State.enabled and not State.autoSlotBusy then
-            startAutoPetSlot()
-        end
-    end
-)
-
--- Intentionally locked OFF to preserve the transfer workflow.
-local favToggle = makeToggle(
-    settingsContent, 224, "Auto Favorite Hatch", false,
-    function(value)
-        if value then
-            favToggle:Set(false, false)
-        end
-    end
-)
-
--- V52-derived display controls: Player Stats + Active Pets UI.
-local playerStatsToggle = makeToggle(
-    settingsContent, 256, "Player Stats", State.playerStatsEnabled,
-    function(value)
-        State.playerStatsEnabled = value
-    end
-)
-
-local activePetsToggle = makeToggle(
-    settingsContent, 288, "Active Pets UI", State.activePetsUIEnabled,
-    function(value)
-        State.activePetsUIEnabled = value
-    end
-)
-
-local maxInfo = Instance.new("TextLabel")
-maxInfo.BackgroundTransparency = 1
-maxInfo.Position = UDim2.fromOffset(10, 322)
-maxInfo.Size = UDim2.new(1, -20, 0, 36)
-maxInfo.Font = Enum.Font.Gotham
-maxInfo.Text = "Night Egg is fixed as default.\nPlacement always targets live MAX farm capacity.\nPlayer Stats / Active Pets UI mirror the V52-style display controls. V3 hatch core follows V52."
-maxInfo.TextColor3 = Color3.fromRGB(150, 142, 165)
-maxInfo.TextSize = 8
-maxInfo.TextWrapped = true
-maxInfo.TextXAlignment = Enum.TextXAlignment.Left
-maxInfo.Parent = settingsContent
+local capacityInfo = Instance.new("TextLabel")
+capacityInfo.BackgroundTransparency = 1
+capacityInfo.Position = UDim2.fromOffset(4, 220)
+capacityInfo.Size = UDim2.new(1, -8, 0, 28)
+capacityInfo.Font = Enum.Font.Gotham
+capacityInfo.Text = "Teams: 8 slots each • Night Egg only • No pet selling"
+capacityInfo.TextColor3 = Color3.fromRGB(150, 142, 165)
+capacityInfo.TextSize = 8
+capacityInfo.TextXAlignment = Enum.TextXAlignment.Center
+capacityInfo.Parent = settingsContent
 
 local function showPage(name)
     for pageName, page in pairs(Pages) do
@@ -2413,8 +2683,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V3_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V3_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V5_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V5_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -2430,24 +2700,15 @@ local function petNameFromUUID(uuid)
     return "Missing"
 end
 
-local function updateTeamPage()
-    local teamName = State.currentGardenTeamName or "None"
-    teamNameLabel.Text = teamName
+function updateTeamPage()
+    teamStatusLabel.Text = string.format(
+        "Reduction %d/8 • Koi %d/8 • Active: %s",
+        math.min(#State.reductionTeam, CONFIG.TEAM_SLOTS),
+        math.min(#State.koiTeam, CONFIG.TEAM_SLOTS),
+        State.currentGardenTeamName or "None"
+    )
 
-    local equipped = {}
-    for _, uuid in ipairs(getEquippedPets(getData())) do
-        if uuid then
-            table.insert(equipped, petNameFromUUID(uuid))
-        end
-    end
-
-    if #equipped == 0 then
-        equippedLabel.Text = "Equipped: None"
-    else
-        equippedLabel.Text = "Equipped: " .. table.concat(equipped, "  |  ")
-    end
-
-    transferTeamLabel[2].Text = teamName
+    transferTeamLabel[2].Text = State.currentGardenTeamName or "None"
 end
 
 local function updateUI()
@@ -2470,9 +2731,7 @@ local function updateUI()
     transferTeamLabel[2].Text = State.currentGardenTeamName or "None"
 
     local currentData = getData()
-    updatePlayerStatsGui(currentData)
-    updateActivePetsGui(currentData)
-    updateTeamPage()
+            updateTeamPage()
 end
 
 showPage("Transfer")
@@ -2508,6 +2767,8 @@ local function cleanup()
 
     destroyPlayerStatsGui()
     destroyActivePetsGui()
+    State.cooldownPets = {}
+    State.activePetsCacheUI = {}
 
     if ScreenGui and ScreenGui.Parent then
         pcall(function()
@@ -2516,38 +2777,30 @@ local function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V3 = nil
+        getgenv().FABLE_TRANSFER_V5 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V3_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V5_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
 -- MAIN CONTINUOUS TRANSFER LOOP
 ---------------------------------------------------------------------
 
-Threads.tradeWatcher = task.spawn(function()
-    while not State.shuttingDown do
-        if State.enabled and not State.tradeBusy then
-            pcall(handleArimabnsTrade)
-        end
-
-        task.wait(0.05)
-    end
-end)
-
 Threads.main = task.spawn(function()
     while not State.shuttingDown do
         if not State.enabled then
+            State.hatching = false
             State.cycleBusy = false
             task.wait(0.15)
             continue
         end
 
         if State.tradeBusy then
+            State.hatching = false
             task.wait(0.1)
             continue
         end
@@ -2605,6 +2858,7 @@ Threads.main = task.spawn(function()
         -- =========================================================
         -- V52 PHASE 3: Koi/Ruby team.
         -- =========================================================
+        State.hatching = true
         local readyCount = #getReadyNightEggs()
 
         if readyCount > 0 then
@@ -2615,6 +2869,7 @@ Threads.main = task.spawn(function()
             end)
 
             if not koiOK then
+                State.hatching = false
                 State.lastStatus = "⚠️ Koi/Ruby team missing."
                 State.cycleBusy = false
                 task.wait(0.5 + GetSafePing())
@@ -2634,6 +2889,7 @@ Threads.main = task.spawn(function()
             )
 
             if State.tradeBusy or not State.enabled then
+                State.hatching = false
                 State.cycleBusy = false
                 continue
             end
@@ -2666,6 +2922,10 @@ Threads.main = task.spawn(function()
             end
         end
 
+        State.hatching = false
+
+        -- Rapid Gift is handled by its independent V52-style watcher.
+
         -- Auto Pet Slot remains a parallel lightweight transfer helper.
         if State.autoPetSlotEnabled and State.enabled and not State.autoSlotBusy then
             pcall(startAutoPetSlot)
@@ -2692,6 +2952,7 @@ Threads.ui = task.spawn(function()
     end
 end)
 
+pcall(refreshAutoAssignedTeams)
 State.lastStatus = "Auto Hatch is OFF."
 updateUI()
-print("[FABLE TRANSFER V3] Loaded — Auto Hatch is OFF. V52 Auto Hatch core copied without pet selling. Enable it from the Transfer tab.")
+print("[FABLE TRANSFER V5] Loaded — Auto Hatch OFF. V52 hatch/UI/trade mechanics copied; Rapid Gift locked to mysto_sailor; no pet selling.")
