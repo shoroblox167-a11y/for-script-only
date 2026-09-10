@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V16
+    FABLE TRANSFER V22
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -58,7 +58,7 @@
 -- while a pet is temporarily absent, so the same team catches up when it
 -- returns to the inventory.
 TransferHttpService = game:GetService("HttpService")
-TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V16_STATE.json"
+TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V22_STATE.json"
 PersistentTransferConfig = {
     enabled = false,
     autoGiftEnabled = true,
@@ -68,11 +68,33 @@ PersistentTransferConfig = {
     koiTeam = {},
 }
 function transferLoadPersistentState()
-    if not (isfile and readfile) or not isfile(TRANSFER_CONFIG_FILE) then
+    if not (isfile and readfile) then
         return
     end
 
-    local ok, raw = pcall(readfile, TRANSFER_CONFIG_FILE)
+    local configFileToRead = TRANSFER_CONFIG_FILE
+
+    if not isfile(configFileToRead) then
+        for _, legacyFile in ipairs({
+            "FABLE_TRANSFER_V21_STATE.json",
+            "FABLE_TRANSFER_V20_STATE.json",
+            "FABLE_TRANSFER_V19_STATE.json",
+            "FABLE_TRANSFER_V18_STATE.json",
+            "FABLE_TRANSFER_V17_STATE.json",
+            "FABLE_TRANSFER_V16_STATE.json",
+        }) do
+            if isfile(legacyFile) then
+                configFileToRead = legacyFile
+                break
+            end
+        end
+    end
+
+    if not isfile(configFileToRead) then
+        return
+    end
+
+    local ok, raw = pcall(readfile, configFileToRead)
     if not ok or type(raw) ~= "string" or raw == "" then
         return
     end
@@ -99,10 +121,17 @@ function transferLoadPersistentState()
     end
 
     if type(decoded.reductionTeam) == "table" then
-        PersistentTransferConfig.reductionTeam = decoded.reductionTeam
+        PersistentTransferConfig.reductionTeam = table.clone(decoded.reductionTeam)
     end
     if type(decoded.koiTeam) == "table" then
-        PersistentTransferConfig.koiTeam = decoded.koiTeam
+        PersistentTransferConfig.koiTeam = table.clone(decoded.koiTeam)
+    end
+
+    -- First successful migration writes the new V20 file immediately.
+    if configFileToRead ~= TRANSFER_CONFIG_FILE and writefile then
+        pcall(function()
+            writefile(TRANSFER_CONFIG_FILE, raw)
+        end)
     end
 end
 
@@ -111,13 +140,30 @@ function transferSavePersistentState()
         return false
     end
 
+    local enabled = PersistentTransferConfig.enabled
+    local autoGiftEnabled = PersistentTransferConfig.autoGiftEnabled
+    local autoPetSlotEnabled = PersistentTransferConfig.autoPetSlotEnabled
+    local autoAssignTeamsEnabled = PersistentTransferConfig.autoAssignTeamsEnabled
+    local reductionTeam = PersistentTransferConfig.reductionTeam
+    local koiTeam = PersistentTransferConfig.koiTeam
+
+    if State then
+        if State.enabled ~= nil then enabled = State.enabled end
+        if State.autoGiftEnabled ~= nil then autoGiftEnabled = State.autoGiftEnabled end
+        if State.autoPetSlotEnabled ~= nil then autoPetSlotEnabled = State.autoPetSlotEnabled end
+        if State.autoAssignTeamsEnabled ~= nil then autoAssignTeamsEnabled = State.autoAssignTeamsEnabled end
+        if type(State.reductionTeam) == "table" then reductionTeam = State.reductionTeam end
+        if type(State.koiTeam) == "table" then koiTeam = State.koiTeam end
+    end
+
     local payload = {
-        enabled = State and State.enabled or PersistentTransferConfig.enabled,
-        autoGiftEnabled = State and State.autoGiftEnabled or PersistentTransferConfig.autoGiftEnabled,
-        autoPetSlotEnabled = State and State.autoPetSlotEnabled or PersistentTransferConfig.autoPetSlotEnabled,
-        autoAssignTeamsEnabled = State and State.autoAssignTeamsEnabled or PersistentTransferConfig.autoAssignTeamsEnabled,
-        reductionTeam = State and State.reductionTeam or PersistentTransferConfig.reductionTeam,
-        koiTeam = State and State.koiTeam or PersistentTransferConfig.koiTeam,
+        version = 22,
+        enabled = enabled == true,
+        autoGiftEnabled = autoGiftEnabled == true,
+        autoPetSlotEnabled = autoPetSlotEnabled == true,
+        autoAssignTeamsEnabled = autoAssignTeamsEnabled == true,
+        reductionTeam = table.clone(reductionTeam or {}),
+        koiTeam = table.clone(koiTeam or {}),
     }
 
     local ok, json = pcall(function()
@@ -130,20 +176,45 @@ function transferSavePersistentState()
     local writeOK = pcall(function()
         writefile(TRANSFER_CONFIG_FILE, json)
     end)
+
+    if writeOK then
+        PersistentTransferConfig.enabled = payload.enabled
+        PersistentTransferConfig.autoGiftEnabled = payload.autoGiftEnabled
+        PersistentTransferConfig.autoPetSlotEnabled = payload.autoPetSlotEnabled
+        PersistentTransferConfig.autoAssignTeamsEnabled = payload.autoAssignTeamsEnabled
+        PersistentTransferConfig.reductionTeam = table.clone(payload.reductionTeam)
+        PersistentTransferConfig.koiTeam = table.clone(payload.koiTeam)
+    end
+
     return writeOK
 end
 
 transferLoadPersistentState()
 
 if getgenv then
-    local previousStop = getgenv().FABLE_TRANSFER_V16_STOP
-    if previousStop then
-        pcall(previousStop)
-        task.wait()
+    local previousStops = {
+        getgenv().FABLE_TRANSFER_V22_STOP,
+        getgenv().FABLE_TRANSFER_V19_STOP,
+        getgenv().FABLE_TRANSFER_V18_STOP,
+        getgenv().FABLE_TRANSFER_V17_STOP,
+        getgenv().FABLE_TRANSFER_V16_STOP,
+    }
+
+    for _, previousStop in ipairs(previousStops) do
+        if type(previousStop) == "function" then
+            pcall(previousStop)
+            task.wait()
+            break
+        end
     end
+
+    getgenv().FABLE_TRANSFER_V22 = nil
+    getgenv().FABLE_TRANSFER_V22_STOP = nil
+    getgenv().FABLE_TRANSFER_V19 = nil
+    getgenv().FABLE_TRANSFER_V19_STOP = nil
     getgenv().FABLE_TRANSFER_V18 = nil
     getgenv().FABLE_TRANSFER_V18_STOP = nil
-    getgenv().FABLE_TRANSFER_V18 = true
+    getgenv().FABLE_TRANSFER_V22 = true
 end
 
 if not game:IsLoaded() then
@@ -159,15 +230,15 @@ VirtualUser = game:GetService("VirtualUser")
 
 LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
-    warn("[FABLE TRANSFER V16] LocalPlayer is not available.")
-    if getgenv then getgenv().FABLE_TRANSFER_V18 = nil end
+    warn("[FABLE TRANSFER V22] LocalPlayer is not available.")
+    if getgenv then getgenv().FABLE_TRANSFER_V22 = nil end
     return
 end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V16] Unsupported game: " .. tostring(game.GameId))
-    if getgenv then getgenv().FABLE_TRANSFER_V18 = nil end
+    warn("[FABLE TRANSFER V22] Unsupported game: " .. tostring(game.GameId))
+    if getgenv then getgenv().FABLE_TRANSFER_V22 = nil end
     return
 end
 
@@ -199,8 +270,8 @@ okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V16] Failed to require DataService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V18 = nil end
+    warn("[FABLE TRANSFER V22] Failed to require DataService.")
+    if getgenv then getgenv().FABLE_TRANSFER_V22 = nil end
     return
 end
 
@@ -208,8 +279,8 @@ okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V16] Failed to require PetGiftingService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V18 = nil end
+    warn("[FABLE TRANSFER V22] Failed to require PetGiftingService.")
+    if getgenv then getgenv().FABLE_TRANSFER_V22 = nil end
     return
 end
 
@@ -227,6 +298,7 @@ CONFIG = {
 
     -- Fast placement / timing mode.
     FAST_PLACEMENT = true,
+    ALWAYS_PLACE_EGGS_TO_MAX = true,
     MIDDLE_EGGS = true,
     OVERDRIVE = true,
     ULTRA = true,
@@ -323,13 +395,14 @@ State = {
     autoSlotBusy = false,
     autoGiftBusy = false,
     cycleBusy = false,
-
-    -- When Auto Hatch was persisted as ON, wait five seconds after the
-    -- script is recreated/re-executed before resuming the cycle.
-    resumeAt = PersistentTransferConfig.enabled == true and (os.clock() + 5) or 0,
+    teamEquipBusy = false,
+    startupTeamPreparing = false,
+    -- V19: persisted Auto Hatch resumes immediately, exactly like the
+    -- V52 start path; there is no reconnect gate before hatching.
+    resumeAt = 0,
 
     lastStatus = PersistentTransferConfig.enabled == true
-        and "Reconnected • Auto Hatch resumes in 5s..."
+        and "Reconnected • Auto Hatch running."
         or "Starting...",
 
     -- V6 anti-idle / best-effort client kick protection.
@@ -529,7 +602,11 @@ function equipTool(tool)
     local ok = pcall(function()
         State.humanoid:EquipTool(tool)
     end)
-    return ok
+    if not ok then
+        return false
+    end
+    task.wait(0.2)
+    return true
 end
 
 function unequipTools()
@@ -893,143 +970,265 @@ function unfavoriteTransferTeamsBeforeTrade()
     return #tools
 end
 
-function unequipAllGardenPets()
-    local data = getData()
+function getEquippedUUIDSet(data)
     local equipped = getEquippedPets(data)
-    local sent = {}
+    local result = {}
 
-    for _, uuid in ipairs(equipped) do
-        if uuid and not sent[uuid] then
-            sent[uuid] = true
-            pcall(function()
-                PetsService:FireServer("UnequipPet", uuid)
-            end)
+    for _, uuid in ipairs(equipped or {}) do
+        if uuid then
+            result[tostring(uuid)] = true
         end
     end
 
-    task.wait(0.2)
+    return result
+end
+
+function getAvailableTeamUUIDs(team, data, maxPets)
+    local inventory = getPetInventory(data)
+    local result = {}
+    local seen = {}
+
+    for _, uuid in ipairs(team or {}) do
+        uuid = tostring(uuid)
+        if uuid ~= "" and not seen[uuid] and inventory[uuid] then
+            seen[uuid] = true
+            table.insert(result, uuid)
+            if maxPets and #result >= maxPets then
+                break
+            end
+        end
+    end
+
+    return result
+end
+
+function isRequestedTeamActuallyEquipped(team)
+    if type(team) ~= "table" or #team == 0 then
+        return false
+    end
+
+    local data = getData()
+    if not data then
+        return false
+    end
+
+    local maxPets = getTeamSlotCapacity(data)
+    local available = getAvailableTeamUUIDs(team, data, maxPets)
+    if #available == 0 then
+        return false
+    end
+
+    local equipped = getEquippedUUIDSet(data)
+    for _, uuid in ipairs(available) do
+        if not equipped[uuid] then
+            return false
+        end
+    end
+
+    return true
+end
+
+function unequipAllGardenPets()
+    if not getData() then
+        return false
+    end
+
+    local deadline = os.clock() + 10
+
+    while os.clock() < deadline do
+        local fresh = getData()
+        local equipped = getEquippedPets(fresh)
+
+        if #equipped == 0 then
+            return true
+        end
+
+        for _, uuid in ipairs(equipped) do
+            uuid = tostring(uuid)
+            if uuid ~= "" then
+                pcall(function()
+                    PetsService:FireServer("UnequipPet", uuid)
+                end)
+            end
+        end
+
+        task.wait(0.2)
+    end
+
+    warn("[FABLE TRANSFER V22] Timeout removing existing garden pets.")
+    return false
 end
 
 function equipGardenTeam(team, teamName)
-    if type(team) ~= "table" or #team == 0 then
-        State.currentGardenTeamName = teamName
+    if State.teamEquipBusy then
+        local waitDeadline = os.clock() + 12
+        while State.teamEquipBusy
+            and os.clock() < waitDeadline
+            and not State.shuttingDown
+        do
+            task.wait(0.1)
+        end
+        if State.teamEquipBusy then
+            return false
+        end
+    end
+
+    State.teamEquipBusy = true
+
+    local function perform()
+        if type(team) ~= "table" or #team == 0 then
+            return false
+        end
+
+        if not State.objectsPhysical or not State.centerPart then
+            if not refreshFarmRefs() then
+                return false
+            end
+        end
+
+        local data = getData()
+        if not data then
+            return false
+        end
+
+        local maxPets = getTeamSlotCapacity(data)
+        if maxPets <= 0 then
+            maxPets = math.min(CONFIG.TEAM_SLOTS, #team)
+        end
+
+        local desired = getAvailableTeamUUIDs(team, data, maxPets)
+        if #desired == 0 then
+            return false
+        end
+
+        -- Do not trust the cached team name. Check the live EquippedPets list.
+        if isRequestedTeamActuallyEquipped(desired) then
+            State.currentGardenTeamName = teamName
+            State.currentGardenTeam = table.clone(desired)
+            return true
+        end
+
+        State.currentGardenTeamName = nil
+        State.currentGardenTeam = {}
+        State.lastStatus = string.format(
+            "🔄 Equipping %s team... 0/%d",
+            teamName,
+            #desired
+        )
+        pcall(statusPush, State.lastStatus)
+        pcall(updateUI)
+
+        if not unequipAllGardenPets() then
+            return false
+        end
+
+        local center = State.centerPart and State.centerPart.Position
+        if not center then
+            refreshFarmRefs()
+            center = State.centerPart and State.centerPart.Position
+        end
+        if not center then
+            return false
+        end
+
+        local placementCF = CFrame.new(center)
+
+        -- Exact verified V51 signature:
+        -- PetsService:FireServer("EquipPet", UUID, placementCF)
+        for _, uuid in ipairs(desired) do
+            if State.shuttingDown or not State.enabled or State.tradeBusy then
+                return false
+            end
+
+            pcall(function()
+                PetsService:FireServer("EquipPet", uuid, placementCF)
+            end)
+        end
+
+        -- V51 waits for the live team to appear, then retries anything missing.
+        local deadline = os.clock() + 10
+
+        while os.clock() < deadline do
+            task.wait(0.2)
+
+            if State.shuttingDown or not State.enabled or State.tradeBusy then
+                return false
+            end
+
+            local freshData = getData()
+            if freshData then
+                local equipped = getEquippedUUIDSet(freshData)
+                local missing = {}
+                local present = 0
+
+                for _, uuid in ipairs(desired) do
+                    if equipped[uuid] then
+                        present += 1
+                    else
+                        table.insert(missing, uuid)
+                    end
+                end
+
+                State.lastStatus = string.format(
+                    "🔄 Equipping %s team... %d/%d",
+                    teamName,
+                    present,
+                    #desired
+                )
+
+                if #missing == 0 then
+                    State.currentGardenTeamName = teamName
+                    State.currentGardenTeam = table.clone(desired)
+                    pcall(transferSavePersistentState)
+                    State.lastStatus = string.format(
+                        "✅ %s team active • %d/%d",
+                        teamName,
+                        present,
+                        #desired
+                    )
+                    return true
+                end
+
+                for _, uuid in ipairs(missing) do
+                    pcall(function()
+                        PetsService:FireServer("EquipPet", uuid, placementCF)
+                    end)
+                end
+            end
+        end
+
+        State.currentGardenTeamName = nil
+        State.currentGardenTeam = {}
+        warn("[FABLE TRANSFER V22] Timeout equipping " .. tostring(teamName) .. " team.")
+        return false
+    end
+
+    local ok, result = pcall(perform)
+    State.teamEquipBusy = false
+
+    if not ok then
+        warn("[FABLE TRANSFER V22] Team equip error:", result)
+        State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
         return false
     end
 
-    unequipAllGardenPets()
-
-    local data = getData()
-    local maxPets = getTeamSlotCapacity(data)
-    if maxPets <= 0 then
-        maxPets = math.min(CONFIG.TEAM_SLOTS, #team)
-    end
-
-    local count = 0
-    local center = State.centerPart and State.centerPart.Position
-    if not center then
-        refreshFarmRefs()
-        center = State.centerPart and State.centerPart.Position
-    end
-    if not center then
-        return false
-    end
-
-    local placementCF = CFrame.new(center)
-
-    for _, uuid in ipairs(team) do
-        if count >= maxPets then
-            break
-        end
-
-        if uuid then
-            pcall(function()
-                PetsService:FireServer("EquipPet", uuid, placementCF)
-            end)
-            count += 1
-        end
-    end
-
-    State.currentGardenTeamName = teamName
-    State.currentGardenTeam = table.clone(team)
-    task.wait(CONFIG.TEAM_SETTLE)
-    return true
-end
-
-function mergePersistentTeam(existing, candidates, maxPets)
-    local merged = {}
-    local seen = {}
-
-    for _, uuid in ipairs(existing or {}) do
-        uuid = tostring(uuid)
-        if uuid ~= "" and not seen[uuid] and #merged < maxPets then
-            seen[uuid] = true
-            table.insert(merged, uuid)
-        end
-    end
-
-    for _, uuid in ipairs(candidates or {}) do
-        uuid = tostring(uuid)
-        if uuid ~= "" and not seen[uuid] and #merged < maxPets then
-            seen[uuid] = true
-            table.insert(merged, uuid)
-        end
-    end
-
-    return merged
-end
-
-function teamArrayFingerprint(team)
-    local parts = {}
-    for _, uuid in ipairs(team or {}) do
-        table.insert(parts, tostring(uuid))
-    end
-    return table.concat(parts, "|")
-end
-
-function refreshAutoAssignedTeams()
-    if not State.autoAssignTeamsEnabled then
-        return State.reductionTeam, State.koiTeam
-    end
-
-    local data = getData()
-    local maxPets = getTeamSlotCapacity(data)
-
-    local oldReduction = teamArrayFingerprint(State.reductionTeam)
-    local oldKoi = teamArrayFingerprint(State.koiTeam)
-
-    State.reductionTeam = mergePersistentTeam(
-        State.reductionTeam,
-        buildReductionTeam(),
-        maxPets
-    )
-
-    State.koiTeam = mergePersistentTeam(
-        State.koiTeam,
-        buildKoiTeam(),
-        maxPets
-    )
-
-    local newReduction = teamArrayFingerprint(State.reductionTeam)
-    local newKoi = teamArrayFingerprint(State.koiTeam)
-
-    if oldReduction ~= newReduction or oldKoi ~= newKoi then
-        pcall(transferSavePersistentState)
-    end
-
-    return State.reductionTeam, State.koiTeam
+    return result == true
 end
 
 function ensureReductionTeam()
     refreshAutoAssignedTeams()
     local team = State.reductionTeam
+
     if #team == 0 then
-        State.currentGardenTeamName = "Reduction"
+        State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
         return false
     end
 
-    if State.currentGardenTeamName == "Reduction" then
+    if State.currentGardenTeamName == "Reduction"
+        and isRequestedTeamActuallyEquipped(team)
+    then
         return true
     end
 
@@ -1039,13 +1238,16 @@ end
 function ensureKoiTeam()
     refreshAutoAssignedTeams()
     local team = State.koiTeam
+
     if #team == 0 then
-        State.currentGardenTeamName = "Koi"
+        State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
         return false
     end
 
-    if State.currentGardenTeamName == "Koi" then
+    if State.currentGardenTeamName == "Koi"
+        and isRequestedTeamActuallyEquipped(team)
+    then
         return true
     end
 
@@ -1057,6 +1259,26 @@ Threads.autoAssignTeams = task.spawn(function()
         if State.autoAssignTeamsEnabled then
             pcall(refreshAutoAssignedTeams)
         end
+        task.wait(0.5)
+    end
+end)
+
+-- Restore the saved team arrays after DataService has become available.
+-- The saved UUIDs remain first; auto-assignment may append newly detected
+-- qualifying pets instead of replacing the remembered selection.
+Threads.restoreTeams = task.spawn(function()
+    for _ = 1, 20 do
+        if State.shuttingDown then
+            return
+        end
+
+        local data = getData()
+        if data then
+            pcall(refreshAutoAssignedTeams)
+            pcall(transferSavePersistentState)
+            return
+        end
+
         task.wait(0.5)
     end
 end)
@@ -1209,7 +1431,7 @@ function placeNightEggsToMax()
 
     -- Exact V52-style outer loop: poll every 0.1s and stop after 10s.
     while true do
-        task.wait(0.1 + GetSafePing())
+        task.wait(0.1)
 
         if not State.enabled or State.tradeBusy then
             break
@@ -1228,12 +1450,6 @@ function placeNightEggsToMax()
 
         if not tool then
             State.lastStatus = "🔴 Out of Night Eggs."
-            break
-        end
-
-        local toolUses = getEggToolUses(tool)
-        if toolUses <= 0 then
-            State.lastStatus = "🔴 Night Egg tool has no uses."
             break
         end
 
@@ -1287,7 +1503,7 @@ function placeNightEggsToMax()
         local waitAmount = os.clock()
 
         while true do
-            task.wait(0.1 + GetSafePing())
+            task.wait(0.1)
 
             if not State.enabled or State.tradeBusy then
                 break
@@ -1511,7 +1727,7 @@ function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V16] Gift error:", err)
+        warn("[FABLE TRANSFER V22] Gift error:", err)
     end
 
     State.autoGiftBusy = false
@@ -2460,7 +2676,7 @@ end
 
 uiParent = getUIParent()
 
-oldUI = uiParent:FindFirstChild("FableTransferV16")
+oldUI = uiParent:FindFirstChild("FableTransferV22")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
@@ -2470,7 +2686,7 @@ end
 ScreenGui = nil
 okGui, guiErr = pcall(function()
     ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "FableTransferV16"
+    ScreenGui.Name = "FableTransferV22"
     ScreenGui.ResetOnSpawn = false
     ScreenGui.IgnoreGuiInset = true
     ScreenGui.DisplayOrder = 9999
@@ -2479,12 +2695,12 @@ okGui, guiErr = pcall(function()
 end)
 
 if not okGui or not ScreenGui then
-    warn("[FABLE TRANSFER V16] GUI creation failed: " .. tostring(guiErr))
-    if getgenv then getgenv().FABLE_TRANSFER_V18 = nil end
+    warn("[FABLE TRANSFER V22] GUI creation failed: " .. tostring(guiErr))
+    if getgenv then getgenv().FABLE_TRANSFER_V22 = nil end
     return
 end
 
-print("[FABLE TRANSFER V16] GUI creation started.")
+print("[FABLE TRANSFER V22] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
 
 Main = Instance.new("Frame")
 Main.Name = "Main"
@@ -3194,7 +3410,7 @@ statusPush("Fable Status initialized")
 
 if State.enabled then
     State.hatchingSystemRunning = true
-    State.lastStatus = "Reconnected • Auto Hatch resumes in 5s..."
+    State.lastStatus = "Reconnected • Auto Hatch running immediately."
 else
     State.hatchingSystemRunning = false
 end
@@ -3219,10 +3435,55 @@ end)
 -- ================================================================
 Varz = Varz or {}
 
-local function v18StatusNow()
+local function v20StatusNow()
     pcall(function() statusPush(State.lastStatus) end)
     pcall(updateStatusBoard)
     pcall(updateUI)
+end
+
+function prepareInitialHatchTeam()
+    if State.startupTeamPreparing or State.shuttingDown or not State.enabled then
+        return
+    end
+
+    State.startupTeamPreparing = true
+
+    task.spawn(function()
+        local deadline = os.clock() + 12
+
+        while State.enabled
+            and not State.shuttingDown
+            and os.clock() < deadline
+        do
+            local data = getData()
+            if data then
+                refreshCharacterRefs()
+                refreshFarmRefs()
+                refreshAutoAssignedTeams()
+
+                local ready = getReadyNightEggs()
+                local success = false
+
+                if #ready > 0 then
+                    State.lastStatus = "🐟 Preparing Koi/Ruby team..."
+                    pcall(updateUI)
+                    success = ensureKoiTeam()
+                else
+                    State.lastStatus = "🔄 Preparing Egg Reduction team..."
+                    pcall(updateUI)
+                    success = ensureReductionTeam()
+                end
+
+                if success then
+                    break
+                end
+            end
+
+            task.wait(0.25)
+        end
+
+        State.startupTeamPreparing = false
+    end)
 end
 
 Varz.StartHatchingSystem = function()
@@ -3238,10 +3499,15 @@ Varz.StartHatchingSystem = function()
 
     pcall(refreshCharacterRefs)
     pcall(refreshFarmRefs)
+    pcall(refreshAutoAssignedTeams)
     pcall(transferSavePersistentState)
-    v18StatusNow()
+    v20StatusNow()
 
-    print("[FABLE TRANSFER V18] Auto Hatch enabled.")
+    -- Equip the correct phase team immediately. The cycle itself continues
+    -- only after this short preflight has finished or timed out.
+    prepareInitialHatchTeam()
+
+    print("[FABLE TRANSFER V22] Auto Hatch enabled.")
     return true
 end
 
@@ -3254,9 +3520,9 @@ Varz.StopHatchingSystem = function()
     State.lastStatus = "Auto Hatch stopped."
 
     pcall(transferSavePersistentState)
-    v18StatusNow()
+    v20StatusNow()
 
-    print("[FABLE TRANSFER V18] Auto Hatch stopped.")
+    print("[FABLE TRANSFER V22] Auto Hatch stopped.")
     return true
 end
 
@@ -3312,6 +3578,11 @@ autoAssignToggle = makeToggle(
         if value then
             refreshAutoAssignedTeams()
         end
+        State.lastStatus = value
+            and "Auto team assignment enabled."
+            or "Auto team assignment disabled."
+        pcall(transferSavePersistentState)
+        pcall(statusPush, State.lastStatus)
         updateTeamPage()
     end
 )
@@ -3535,12 +3806,16 @@ end
 function selectAllDetectedReductionPets()
     State.reductionTeam = buildReductionTeam()
     State.lastStatus = string.format("✅ Reduction selected: %d/8", #State.reductionTeam)
+    pcall(transferSavePersistentState)
+    pcall(statusPush, State.lastStatus)
     updateTeamPage()
 end
 
 function selectAllDetectedKoiPets()
     State.koiTeam = buildKoiTeam()
     State.lastStatus = string.format("✅ Koi/Ruby selected: %d/8", #State.koiTeam)
+    pcall(transferSavePersistentState)
+    pcall(statusPush, State.lastStatus)
     updateTeamPage()
 end
 
@@ -3550,22 +3825,28 @@ koiSelect.Activated:Connect(selectAllDetectedKoiPets)
 reductionEquip.Activated:Connect(function()
     refreshAutoAssignedTeams()
     if #State.reductionTeam > 0 then
-        equipGardenTeam(State.reductionTeam, "Reduction")
-        State.lastStatus = "✅ Reduction team equipped."
+        local equipped = equipGardenTeam(State.reductionTeam, "Reduction")
+        State.lastStatus = equipped
+            and "✅ Reduction team equipped."
+            or "⚠️ Reduction team could not be equipped."
     else
         State.lastStatus = "❌ No Birb/Rainbow Birb/Mimic Octopus detected."
     end
+    pcall(transferSavePersistentState)
     updateTeamPage()
 end)
 
 koiEquip.Activated:Connect(function()
     refreshAutoAssignedTeams()
     if #State.koiTeam > 0 then
-        equipGardenTeam(State.koiTeam, "Koi")
-        State.lastStatus = "✅ Koi/Ruby team equipped."
+        local equipped = equipGardenTeam(State.koiTeam, "Koi")
+        State.lastStatus = equipped
+            and "✅ Koi/Ruby team equipped."
+            or "⚠️ Koi/Ruby team could not be equipped."
     else
         State.lastStatus = "❌ No Koi/Ruby Squid detected."
     end
+    pcall(transferSavePersistentState)
     updateTeamPage()
 end)
 
@@ -3628,8 +3909,8 @@ makeGridToggle(settingsContent, halfWidth + gap, 128, halfWidth, "Active Pets UI
 
 makeGridToggle(settingsContent, 0, 160, halfWidth, "Auto Assign Pet Teams", State.autoAssignTeamsEnabled, function(v)
     State.autoAssignTeamsEnabled = v
-    pcall(transferSavePersistentState)
     if v then refreshAutoAssignedTeams() end
+    pcall(transferSavePersistentState)
     updateTeamPage()
 end)
 
@@ -3653,6 +3934,19 @@ antiIdleToggle = makeGridToggle(
     end
 )
 
+alwaysMaxToggle = makeGridToggle(
+    settingsContent, halfWidth + gap, 192, halfWidth,
+    "Always Place Eggs to MAX", CONFIG.ALWAYS_PLACE_EGGS_TO_MAX,
+    function(value)
+        CONFIG.ALWAYS_PLACE_EGGS_TO_MAX = value
+        State.lastStatus = value
+            and "Always Place Eggs to MAX enabled."
+            or "Always Place Eggs to MAX disabled."
+        pcall(statusPush, State.lastStatus)
+        pcall(updateStatusBoard)
+    end
+)
+
 targetInfo = Instance.new("TextLabel")
 targetInfo.BackgroundTransparency = 1
 targetInfo.Position = UDim2.fromOffset(4, 226)
@@ -3669,7 +3963,7 @@ capacityInfo.BackgroundTransparency = 1
 capacityInfo.Position = UDim2.fromOffset(4, 252)
 capacityInfo.Size = UDim2.new(1, -8, 0, 28)
 capacityInfo.Font = Enum.Font.Gotham
-capacityInfo.Text = "Teams: 8 slots each • Night Egg only • No pet selling"
+capacityInfo.Text = "Teams: 8 slots each • Night Egg • Always MAX placement • No pet selling"
 capacityInfo.TextColor3 = Color3.fromRGB(150, 142, 165)
 capacityInfo.TextSize = 8
 capacityInfo.TextXAlignment = Enum.TextXAlignment.Center
@@ -3764,8 +4058,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V16_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V16_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V22_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V22_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -3922,13 +4216,13 @@ function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V18 = nil
+        getgenv().FABLE_TRANSFER_V22 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V18_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V22_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -3944,8 +4238,7 @@ Threads.main = task.spawn(function()
             continue
         end
 
-        -- Persisted Auto Hatch state is restored as ON after re-execution,
-        -- but V15/V52 requested a short five-second reconnect grace period.
+        -- Persisted Auto Hatch resumes immediately; there is no reconnect gate.
         if State.resumeAt > 0 then
             local remaining = State.resumeAt - os.clock()
             if remaining > 0 then
@@ -3966,6 +4259,12 @@ Threads.main = task.spawn(function()
             continue
         end
 
+        if State.startupTeamPreparing then
+            State.hatching = false
+            task.wait(0.1)
+            continue
+        end
+
         State.cycleBusy = true
 
         -- =========================================================
@@ -3980,13 +4279,26 @@ Threads.main = task.spawn(function()
         local farmEggCount = getFarmEggCount()
         local readyNightEggs = getReadyNightEggs()
 
-        -- If completely empty, seed the garden. Placement may stop early
-        -- because the player is short on Night Eggs; that is not fatal.
-        -- If one or more eggs already exist, NEVER wait for MAX before
-        -- continuing; an existing egg is enough to drive the cycle.
-        if farmEggCount == 0 then
+        -- V20: always fill toward MAX when there is no ready egg, but never
+        -- delay a ready egg just to finish filling the farm.
+        local maxEggs = getMaxEggCapacity(getData())
+
+        if #readyNightEggs == 0
+            and CONFIG.ALWAYS_PLACE_EGGS_TO_MAX
+            and farmEggCount < maxEggs
+        then
             State.hatching = false
-            State.lastStatus = "🥚 Garden empty • placing Night Eggs..."
+            State.lastStatus = string.format(
+                "🥚 Filling garden to MAX • %d/%d",
+                farmEggCount,
+                maxEggs
+            )
+            pcall(placeNightEggsToMax)
+            farmEggCount = getFarmEggCount()
+            readyNightEggs = getReadyNightEggs()
+        elseif farmEggCount == 0 then
+            State.hatching = false
+            State.lastStatus = "⏳ Waiting for a Night Egg..."
             pcall(placeNightEggsToMax)
             farmEggCount = getFarmEggCount()
             readyNightEggs = getReadyNightEggs()
@@ -4029,16 +4341,33 @@ Threads.main = task.spawn(function()
                 and not State.shuttingDown
                 and #getReadyNightEggs() == 0
             do
-                -- Keep filling missing spots opportunistically. Failure to
-                -- reach max is explicitly non-fatal.
-                if CONFIG.FAST_PLACEMENT and getFarmEggCount() > 0 then
-                    pcall(placeNightEggsToMax)
+                local reductionOK = false
+                pcall(function()
+                    reductionOK = ensureReductionTeam()
+                end)
+
+                if reductionOK then
+                    State.lastStatus = string.format(
+                        "🔄 Reduction team active • %d egg(s) waiting",
+                        getFarmEggCount()
+                    )
+                else
+                    State.lastStatus = "⏳ Preparing Reduction team..."
                 end
 
-                State.lastStatus = string.format(
-                    "⏳ Waiting • %d Night Egg(s) on farm",
-                    getFarmEggCount()
-                )
+                if CONFIG.ALWAYS_PLACE_EGGS_TO_MAX then
+                    local maxEggs = getMaxEggCapacity(getData())
+                    if maxEggs > 0 and getFarmEggCount() < maxEggs then
+                        pcall(placeNightEggsToMax)
+                    end
+                end
+
+                if #getReadyNightEggs() == 0 then
+                    State.lastStatus = string.format(
+                        "⏳ Waiting • %d Night Egg(s) on farm",
+                        getFarmEggCount()
+                    )
+                end
                 task.wait(0.5 + GetSafePing())
             end
         end
@@ -4056,36 +4385,60 @@ Threads.main = task.spawn(function()
         if #readyNightEggs > 0 then
             State.hatching = true
 
+            -- REQUIRED: never hatch a ready egg until the Koi/Ruby team
+            -- has been successfully selected for the garden. Keep retrying
+            -- instead of falling through to HatchPet without the Koi team.
             local koiOK = false
-            pcall(function()
-                koiOK = ensureKoiTeam()
-            end)
+            while State.enabled
+                and not State.tradeBusy
+                and not State.shuttingDown
+                and not koiOK
+            do
+                local ok = false
+                local success = pcall(function()
+                    ok = ensureKoiTeam()
+                end)
 
-            if koiOK then
-                State.lastStatus = string.format(
-                    "🐟 Koi/Ruby team active • %d ready egg(s)",
-                    #readyNightEggs
-                )
+                koiOK = success and ok == true
 
-                if GetFastHatchMode() then
-                    task.wait(
-                        GetUltraMode()
-                        and (0.5 + GetSafePing())
-                        or (2.5 + GetSafePing())
+                if koiOK then
+                    State.lastStatus = string.format(
+                        "🐟 Koi/Ruby team active • %d ready egg(s)",
+                        #readyNightEggs
                     )
+                    task.wait(CONFIG.TEAM_SETTLE)
                 else
-                    task.wait(4 + GetSafePing())
+                    State.lastStatus = "⏳ Equipping Koi/Ruby team before hatch..."
+                    task.wait(0.5 + GetSafePing())
                 end
+            end
 
-                if State.enabled and not State.tradeBusy then
-                    local hatched = hatchReadyNightEggs()
+            -- A safety gate immediately before HatchPet. If the Koi team
+            -- could not be equipped, this cycle must not hatch anything.
+            if not koiOK or not State.enabled or State.tradeBusy then
+                State.hatching = false
+                State.cycleBusy = false
+                pcall(transferSavePersistentState)
+                task.wait(0.25)
+                continue
+            end
 
-                    if hatched > 0 and State.autoGiftEnabled then
-                        pcall(fastGiftAllNightEggPets)
-                    end
-                end
+            if GetFastHatchMode() then
+                task.wait(
+                    GetUltraMode()
+                    and (0.5 + GetSafePing())
+                    or (2.5 + GetSafePing())
+                )
             else
-                State.lastStatus = "⚠️ Koi/Ruby team unavailable • retrying"
+                task.wait(4 + GetSafePing())
+            end
+
+            if State.enabled and not State.tradeBusy then
+                local hatched = hatchReadyNightEggs()
+
+                if hatched > 0 and State.autoGiftEnabled then
+                    pcall(fastGiftAllNightEggPets)
+                end
             end
 
             State.hatching = false
@@ -4095,8 +4448,8 @@ Threads.main = task.spawn(function()
         -- PHASE 4: Refill after the hatch. Again, MAX is a target, not a
         -- gate: if the player lacks eggs, keep cycling the one(s) available.
         -- =========================================================
-        if State.enabled and not State.tradeBusy then
-            State.lastStatus = "🥚 Refill • MAX is optional"
+        if State.enabled and not State.tradeBusy and CONFIG.ALWAYS_PLACE_EGGS_TO_MAX then
+            State.lastStatus = "🥚 Refill • keeping garden at MAX"
             pcall(placeNightEggsToMax)
         end
 
@@ -4137,7 +4490,7 @@ pcall(refreshAutoAssignedTeams)
 
 -- Save immediately on teleport so an enabled Auto Hatch and assigned teams
 -- survive the transition to the next server. The next execution restores
--- them and enforces the five-second resume delay.
+-- them and resumes immediately.
 if LocalPlayer.OnTeleport then
     Connections.onTeleport = LocalPlayer.OnTeleport:Connect(function()
         pcall(transferSavePersistentState)
@@ -4145,10 +4498,14 @@ if LocalPlayer.OnTeleport then
 end
 
 if State.enabled then
-    State.lastStatus = "Reconnected • Auto Hatch resumes in 5s..."
+    State.hatchingSystemRunning = true
+    State.resumeAt = 0
+    State.lastStatus = "Reconnected • Auto Hatch preparing team..."
+    task.defer(prepareInitialHatchTeam)
 else
+    State.hatchingSystemRunning = false
     State.lastStatus = "Auto Hatch is OFF."
 end
 statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V18] Loaded — persistent Auto Hatch/teams fixed; MAX is optional; five-second reconnect resume; no pet selling.")
+print("[FABLE TRANSFER V22] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
