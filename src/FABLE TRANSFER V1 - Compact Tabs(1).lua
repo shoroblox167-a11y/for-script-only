@@ -63,11 +63,10 @@ PersistentTransferConfig = {
     enabled = false,
     autoGiftEnabled = true,
     autoPetSlotEnabled = true,
-    autoAssignTeamsEnabled = PersistentTransferConfig.autoAssignTeamsEnabled == true,
-    reductionTeam = table.clone(PersistentTransferConfig.reductionTeam or {}),
-    koiTeam = table.clone(PersistentTransferConfig.koiTeam or {}),
+    autoAssignTeamsEnabled = true,
+    reductionTeam = {},
+    koiTeam = {},
 }
-
 function transferLoadPersistentState()
     if not (isfile and readfile) or not isfile(TRANSFER_CONFIG_FILE) then
         return
@@ -142,9 +141,9 @@ if getgenv then
         pcall(previousStop)
         task.wait()
     end
-    getgenv().FABLE_TRANSFER_V16 = nil
-    getgenv().FABLE_TRANSFER_V16_STOP = nil
-    getgenv().FABLE_TRANSFER_V16 = true
+    getgenv().FABLE_TRANSFER_V18 = nil
+    getgenv().FABLE_TRANSFER_V18_STOP = nil
+    getgenv().FABLE_TRANSFER_V18 = true
 end
 
 if not game:IsLoaded() then
@@ -161,14 +160,14 @@ VirtualUser = game:GetService("VirtualUser")
 LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
     warn("[FABLE TRANSFER V16] LocalPlayer is not available.")
-    if getgenv then getgenv().FABLE_TRANSFER_V16 = nil end
+    if getgenv then getgenv().FABLE_TRANSFER_V18 = nil end
     return
 end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
     warn("[FABLE TRANSFER V16] Unsupported game: " .. tostring(game.GameId))
-    if getgenv then getgenv().FABLE_TRANSFER_V16 = nil end
+    if getgenv then getgenv().FABLE_TRANSFER_V18 = nil end
     return
 end
 
@@ -201,7 +200,7 @@ okData, DataService = pcall(function()
 end)
 if not okData or not DataService then
     warn("[FABLE TRANSFER V16] Failed to require DataService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V16 = nil end
+    if getgenv then getgenv().FABLE_TRANSFER_V18 = nil end
     return
 end
 
@@ -210,7 +209,7 @@ okGift, PetGiftingService = pcall(function()
 end)
 if not okGift or not PetGiftingService then
     warn("[FABLE TRANSFER V16] Failed to require PetGiftingService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V16 = nil end
+    if getgenv then getgenv().FABLE_TRANSFER_V18 = nil end
     return
 end
 
@@ -223,7 +222,7 @@ CONFIG = {
     TARGET_TRADE_PLAYER = "arimabns",
     DEFAULT_EGG = "Night Egg",
 
-    -- Continuous max fill.
+    -- MAX is only a refill target, never a requirement for continuing.
     MAX_EGG_TARGET = 0, -- 0 = use the game's live MaxEggsInFarm value.
 
     -- Fast placement / timing mode.
@@ -280,6 +279,7 @@ CONFIG = {
 
 State = {
     enabled = PersistentTransferConfig.enabled == true,
+    hatchingSystemRunning = PersistentTransferConfig.enabled == true,
     shuttingDown = false,
 
     -- V2 UI-connected controls.
@@ -296,9 +296,11 @@ State = {
     activePetsGui = nil,
     activePetsLabel = nil,
 
-    autoAssignTeamsEnabled = true,
-    reductionTeam = {},
-    koiTeam = {},
+    -- Restore saved teams immediately. Auto-assignment can append newly
+    -- discovered qualifying pets later without discarding saved UUIDs.
+    autoAssignTeamsEnabled = PersistentTransferConfig.autoAssignTeamsEnabled == true,
+    reductionTeam = table.clone(PersistentTransferConfig.reductionTeam or {}),
+    koiTeam = table.clone(PersistentTransferConfig.koiTeam or {}),
     hatching = false,
     cooldownPets = {},
     activePetsCacheUI = {},
@@ -617,11 +619,18 @@ function getReadyNightEggs()
     local result = {}
 
     for _, egg in ipairs(getFarmEggModels()) do
-        local timeToHatch = tonumber(egg:GetAttribute("TimeToHatch"))
-        local eggName = egg:GetAttribute("EggName")
+        if egg:IsA("Model")
+            and egg.Name == "PetEgg"
+            and tonumber(egg:GetAttribute("TimeToHatch")) == 0
+        then
+            local eggName = egg:GetAttribute("EggName")
 
-        if timeToHatch == 0 and eggName == CONFIG.DEFAULT_EGG then
-            table.insert(result, egg)
+            if eggName == nil
+                or tostring(eggName) == ""
+                or tostring(eggName) == CONFIG.DEFAULT_EGG
+            then
+                table.insert(result, egg)
+            end
         end
     end
 
@@ -1321,9 +1330,14 @@ function hatchReadyNightEggs()
         if eggModel:IsA("Model")
             and eggModel.Name == "PetEgg"
             and tonumber(eggModel:GetAttribute("TimeToHatch")) == 0
-            and eggModel:GetAttribute("EggName") == CONFIG.DEFAULT_EGG
         then
-            table.insert(ready, eggModel)
+            local eggName = eggModel:GetAttribute("EggName")
+            if eggName == nil
+                or tostring(eggName) == ""
+                or tostring(eggName) == CONFIG.DEFAULT_EGG
+            then
+                table.insert(ready, eggModel)
+            end
         end
     end
 
@@ -1368,9 +1382,14 @@ function hatchReadyNightEggs()
             if eggModel:IsA("Model")
                 and eggModel.Name == "PetEgg"
                 and tonumber(eggModel:GetAttribute("TimeToHatch")) == 0
-                and eggModel:GetAttribute("EggName") == CONFIG.DEFAULT_EGG
             then
-                remainingReady += 1
+                local eggName = eggModel:GetAttribute("EggName")
+                if eggName == nil
+                    or tostring(eggName) == ""
+                    or tostring(eggName) == CONFIG.DEFAULT_EGG
+                then
+                    remainingReady += 1
+                end
             end
         end
 
@@ -2461,7 +2480,7 @@ end)
 
 if not okGui or not ScreenGui then
     warn("[FABLE TRANSFER V16] GUI creation failed: " .. tostring(guiErr))
-    if getgenv then getgenv().FABLE_TRANSFER_V16 = nil end
+    if getgenv then getgenv().FABLE_TRANSFER_V18 = nil end
     return
 end
 
@@ -3150,7 +3169,7 @@ function updateStatusBoard()
     statusValues["Next Action"] = statusGetNextAction(stage)
     statusValues["Uptime"] = statusFormatUptime(os.clock() - State.statusStartedAt)
 
-    local running = State.enabled
+    local running = State.hatchingSystemRunning and State.enabled
     statusStateLabel.Text = running
         and ("● RUNNING  •  @" .. tostring(LocalPlayer.Name))
         or ("🛑 STOP  •  @" .. tostring(LocalPlayer.Name))
@@ -3172,6 +3191,13 @@ Threads.statusBoard = task.spawn(function()
 end)
 
 statusPush("Fable Status initialized")
+
+if State.enabled then
+    State.hatchingSystemRunning = true
+    State.lastStatus = "Reconnected • Auto Hatch resumes in 5s..."
+else
+    State.hatchingSystemRunning = false
+end
 statusRebuildFeed()
 
 -- Auto Pet Slot is an independent feature. It must not depend on the
@@ -3184,25 +3210,72 @@ task.spawn(function()
 end)
 
 -- Transfer page.
+-- ================================================================
+-- V52 AUTO-HATCH START/STOP WIRING
+-- V52 starts its hatching system through StartHatchingSystem() and
+-- stops it through StopHatchingSystem(). The existing Transfer cycle
+-- below is the V52-derived SessionLoop equivalent with pet selling
+-- intentionally removed.
+-- ================================================================
+Varz = Varz or {}
+
+local function v18StatusNow()
+    pcall(function() statusPush(State.lastStatus) end)
+    pcall(updateStatusBoard)
+    pcall(updateUI)
+end
+
+Varz.StartHatchingSystem = function()
+    if State.shuttingDown then
+        return false
+    end
+
+    State.enabled = true
+    State.hatchingSystemRunning = true
+    State.resumeAt = 0
+    State.cycleBusy = false
+    State.lastStatus = "Auto Hatch enabled."
+
+    pcall(refreshCharacterRefs)
+    pcall(refreshFarmRefs)
+    pcall(transferSavePersistentState)
+    v18StatusNow()
+
+    print("[FABLE TRANSFER V18] Auto Hatch enabled.")
+    return true
+end
+
+Varz.StopHatchingSystem = function()
+    State.enabled = false
+    State.hatchingSystemRunning = false
+    State.hatching = false
+    State.cycleBusy = false
+    State.resumeAt = 0
+    State.lastStatus = "Auto Hatch stopped."
+
+    pcall(transferSavePersistentState)
+    v18StatusNow()
+
+    print("[FABLE TRANSFER V18] Auto Hatch stopped.")
+    return true
+end
+
 transferSection = makeSection(TransferPage, "TRANSFER", 0, 185)
 
 autoHatchToggle = makeToggle(
     transferSection,
     28,
     "Auto Hatch / Transfer",
-    false,
+    State.enabled,
     function(value)
-        State.enabled = value
-        State.resumeAt = 0
-        pcall(transferSavePersistentState)
-
         if value then
-            State.lastStatus = "Transfer enabled."
+            Varz.StartHatchingSystem()
+
             if State.autoPetSlotEnabled and not State.autoSlotBusy then
                 startAutoPetSlot()
             end
         else
-            State.lastStatus = "Transfer stopped."
+            Varz.StopHatchingSystem()
         end
     end
 )
@@ -3763,8 +3836,8 @@ function updateUI()
     autoHatchToggle:Set(State.enabled, false)
 
     transferModeLabel[2].Text = CONFIG.FAST_PLACEMENT and "FAST" or "NORMAL"
-    statusLabel.Text = State.enabled
-        and (State.lastStatus or "Transfer running.")
+    statusLabel.Text = (State.enabled and State.hatchingSystemRunning)
+        and (State.lastStatus or "Auto Hatch running.")
         or "Auto Hatch is OFF — waiting for you."
 
     local farmCount = getFarmEggCount()
@@ -3803,6 +3876,7 @@ function cleanup()
     pcall(transferSavePersistentState)
     State.shuttingDown = true
     State.enabled = false
+    State.hatchingSystemRunning = false
     State.antiIdleEnabled = false
     State.antiKickEnabled = false
 
@@ -3848,13 +3922,13 @@ function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V16 = nil
+        getgenv().FABLE_TRANSFER_V18 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V16_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V18_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -3863,7 +3937,7 @@ end
 
 Threads.main = task.spawn(function()
     while not State.shuttingDown do
-        if not State.enabled then
+        if not State.enabled or not State.hatchingSystemRunning then
             State.hatching = false
             State.cycleBusy = false
             task.wait(0.15)
@@ -3899,11 +3973,17 @@ Threads.main = task.spawn(function()
         -- Unlike the previous build, this does NOT require MAX eggs.
         -- One existing Night Egg is enough to continue the cycle.
         -- =========================================================
+        if not State.objectsPhysical or not State.centerPart then
+            pcall(refreshFarmRefs)
+        end
+
         local farmEggCount = getFarmEggCount()
         local readyNightEggs = getReadyNightEggs()
 
         -- If completely empty, seed the garden. Placement may stop early
         -- because the player is short on Night Eggs; that is not fatal.
+        -- If one or more eggs already exist, NEVER wait for MAX before
+        -- continuing; an existing egg is enough to drive the cycle.
         if farmEggCount == 0 then
             State.hatching = false
             State.lastStatus = "🥚 Garden empty • placing Night Eggs..."
@@ -4071,4 +4151,4 @@ else
 end
 statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V16] Loaded — Auto Hatch OFF. V52 status board/UI/trade mechanics copied; anti-idle enabled; Rapid Gift locked to mysto_sailor; no pet selling.")
+print("[FABLE TRANSFER V18] Loaded — persistent Auto Hatch/teams fixed; MAX is optional; five-second reconnect resume; no pet selling.")
