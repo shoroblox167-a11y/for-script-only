@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V13
+    FABLE TRANSFER V15
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -55,14 +55,14 @@
 -- the global flag set. Never return silently: stop stale instance, clear
 -- the marker, and continue initialization.
 if getgenv then
-    local previousStop = getgenv().FABLE_TRANSFER_V13_STOP
+    local previousStop = getgenv().FABLE_TRANSFER_V15_STOP
     if previousStop then
         pcall(previousStop)
         task.wait()
     end
-    getgenv().FABLE_TRANSFER_V13 = nil
-    getgenv().FABLE_TRANSFER_V13_STOP = nil
-    getgenv().FABLE_TRANSFER_V13 = true
+    getgenv().FABLE_TRANSFER_V15 = nil
+    getgenv().FABLE_TRANSFER_V15_STOP = nil
+    getgenv().FABLE_TRANSFER_V15 = true
 end
 
 if not game:IsLoaded() then
@@ -78,15 +78,15 @@ VirtualUser = game:GetService("VirtualUser")
 
 LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
-    warn("[FABLE TRANSFER V13] LocalPlayer is not available.")
-    if getgenv then getgenv().FABLE_TRANSFER_V13 = nil end
+    warn("[FABLE TRANSFER V15] LocalPlayer is not available.")
+    if getgenv then getgenv().FABLE_TRANSFER_V15 = nil end
     return
 end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V13] Unsupported game: " .. tostring(game.GameId))
-    if getgenv then getgenv().FABLE_TRANSFER_V13 = nil end
+    warn("[FABLE TRANSFER V15] Unsupported game: " .. tostring(game.GameId))
+    if getgenv then getgenv().FABLE_TRANSFER_V15 = nil end
     return
 end
 
@@ -118,8 +118,8 @@ okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V13] Failed to require DataService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V13 = nil end
+    warn("[FABLE TRANSFER V15] Failed to require DataService.")
+    if getgenv then getgenv().FABLE_TRANSFER_V15 = nil end
     return
 end
 
@@ -127,8 +127,8 @@ okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V13] Failed to require PetGiftingService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V13 = nil end
+    warn("[FABLE TRANSFER V15] Failed to require PetGiftingService.")
+    if getgenv then getgenv().FABLE_TRANSFER_V15 = nil end
     return
 end
 
@@ -1350,7 +1350,7 @@ function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V13] Gift error:", err)
+        warn("[FABLE TRANSFER V15] Gift error:", err)
     end
 
     State.autoGiftBusy = false
@@ -1412,34 +1412,49 @@ function findLowestQualifyingPetUUID(inventory, requiredLevel)
 end
 
 function startAutoPetSlot()
-    if State.autoSlotBusy or not State.autoPetSlotEnabled then
+    if State.autoSlotBusy or not State.autoPetSlotEnabled or State.shuttingDown then
         return
     end
 
     State.autoSlotBusy = true
 
     Threads.autoPetSlot = task.spawn(function()
-        while State.enabled and State.autoPetSlotEnabled do
+        while State.autoPetSlotEnabled and not State.shuttingDown do
             local data = getData()
+
+            if not data then
+                State.lastStatus = "Auto Pet Slot: waiting for DataService..."
+                task.wait(0.5)
+                continue
+            end
+
+            -- The game's PetEquipSlots UI reads this exact value from
+            -- Data.PetsData.PurchasedEquipSlots.
             local purchased = getPurchasedSlotCount(data)
             local stage = purchased + 1
             local requiredLevel = CONFIG.AUTO_SLOT_REQUIREMENTS[stage]
 
             if not requiredLevel then
-                -- All five stages are already purchased.
+                State.lastStatus = "Auto Pet Slot: all 5 slots unlocked."
                 break
             end
 
             local inventory = getPetInventory(data)
-            local uuid, level, petName = findLowestQualifyingPetUUID(inventory, requiredLevel)
+            local uuid, level, petName =
+                findLowestQualifyingPetUUID(inventory, requiredLevel)
 
             if not uuid then
+                State.lastStatus = string.format(
+                    "Auto Pet Slot: waiting for Common/Uncommon pet Lv.%d+",
+                    requiredLevel
+                )
                 task.wait(0.5)
                 continue
             end
 
-            -- The game's real remote is exactly one remote:
-            -- UnlockSlotFromPet:FireServer(UUID, "Pet")
+            -- Verified game implementation:
+            -- GameEvents.UnlockSlotFromPet:FireServer(UUID, CurrentMode)
+            -- For the pet-slot UI CurrentMode is "Pet".
             State.lastStatus = string.format(
                 "Auto Pet Slot: %s Lv.%d -> %d+",
                 tostring(petName),
@@ -1448,23 +1463,50 @@ function startAutoPetSlot()
             )
 
             local before = purchased
-            pcall(function()
-                UnlockSlotRemote:FireServer(uuid, "Pet")
+            local ok, err = pcall(function()
+                UnlockSlotRemote:FireServer(tostring(uuid), "Pet")
             end)
 
-            -- Wait for the live purchased-slot value to advance so the same
-            -- pet/remote isn't hammered while replication is catching up.
-            local deadline = os.clock() + 2.5
-            while State.enabled and os.clock() < deadline do
+            if not ok then
+                State.lastStatus = "Auto Pet Slot error: " .. tostring(err)
+                task.wait(1)
+                continue
+            end
+
+            -- Give the server time to replicate the purchase. If it does not
+            -- advance, retry the stage on the next pass instead of getting
+            -- stuck permanently.
+            local deadline = os.clock() + 3
+            local unlocked = false
+
+            while State.autoPetSlotEnabled
+                and not State.shuttingDown
+                and os.clock() < deadline
+            do
                 task.wait(0.15)
-                local fresh = getPurchasedSlotCount(getData())
+
+                local freshData = getData()
+                local fresh = getPurchasedSlotCount(freshData)
+
                 if fresh > before then
+                    unlocked = true
+                    State.lastStatus = string.format(
+                        "Auto Pet Slot: unlocked slot %d/5.",
+                        fresh
+                    )
                     break
                 end
+            end
+
+            if not unlocked then
+                State.lastStatus =
+                    "Auto Pet Slot: unlock not confirmed; retrying..."
+                task.wait(0.5)
             end
         end
 
         State.autoSlotBusy = false
+        Threads.autoPetSlot = nil
     end)
 end
 
@@ -2257,7 +2299,7 @@ end
 
 uiParent = getUIParent()
 
-oldUI = uiParent:FindFirstChild("FableTransferV13")
+oldUI = uiParent:FindFirstChild("FableTransferV15")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
@@ -2267,7 +2309,7 @@ end
 ScreenGui = nil
 okGui, guiErr = pcall(function()
     ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "FableTransferV13"
+    ScreenGui.Name = "FableTransferV15"
     ScreenGui.ResetOnSpawn = false
     ScreenGui.IgnoreGuiInset = true
     ScreenGui.DisplayOrder = 9999
@@ -2276,12 +2318,12 @@ okGui, guiErr = pcall(function()
 end)
 
 if not okGui or not ScreenGui then
-    warn("[FABLE TRANSFER V13] GUI creation failed: " .. tostring(guiErr))
-    if getgenv then getgenv().FABLE_TRANSFER_V13 = nil end
+    warn("[FABLE TRANSFER V15] GUI creation failed: " .. tostring(guiErr))
+    if getgenv then getgenv().FABLE_TRANSFER_V15 = nil end
     return
 end
 
-print("[FABLE TRANSFER V13] GUI creation started.")
+print("[FABLE TRANSFER V15] GUI creation started.")
 
 Main = Instance.new("Frame")
 Main.Name = "Main"
@@ -2990,6 +3032,15 @@ end)
 statusPush("Fable Status initialized")
 statusRebuildFeed()
 
+-- Auto Pet Slot is an independent feature. It must not depend on the
+-- Auto Hatch / Transfer toggle being enabled.
+task.spawn(function()
+    task.wait(1)
+    if State.autoPetSlotEnabled and not State.autoSlotBusy and not State.shuttingDown then
+        startAutoPetSlot()
+    end
+end)
+
 -- Transfer page.
 transferSection = makeSection(TransferPage, "TRANSFER", 0, 185)
 
@@ -3347,7 +3398,10 @@ end)
 
 autoSlotToggle = makeGridToggle(settingsContent, halfWidth + gap, 96, halfWidth, "Auto Pet Slot", State.autoPetSlotEnabled, function(v)
     State.autoPetSlotEnabled = v
-    if v and State.enabled and not State.autoSlotBusy then startAutoPetSlot() end
+
+    if v and not State.autoSlotBusy then
+        startAutoPetSlot()
+    end
 end)
 
 makeGridToggle(settingsContent, 0, 128, halfWidth, "Player Stats", State.playerStatsEnabled, function(v) State.playerStatsEnabled = v end)
@@ -3490,8 +3544,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V13_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V13_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V15_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V15_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -3646,13 +3700,13 @@ function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V13 = nil
+        getgenv().FABLE_TRANSFER_V15 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V13_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V15_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -3677,14 +3731,52 @@ Threads.main = task.spawn(function()
         State.cycleBusy = true
 
         -- =========================================================
-        -- V52 PHASE 1: inspect whether eggs are already ready.
+        -- V52 CYCLE PHASE 1: FILL THE GARDEN FIRST.
+        -- This is the missing first step from V14. If the garden is
+        -- empty, we must create the selected Night Eggs before we
+        -- can wait for them to become ready.
+        -- =========================================================
+        State.hatching = false
+        State.lastStatus = "🥚 Filling Garden to MAX..."
+
+        local farmMax = tonumber(CONFIG.MAX_EGG_TARGET) or 0
+        if farmMax <= 0 then
+            farmMax = tonumber(getMaxEggCapacity(getData())) or 0
+        end
+
+        local farmBefore = getFarmEggCount()
+        local placementOK = false
+
+        if farmMax <= 0 or farmBefore < farmMax then
+            placementOK = pcall(function()
+                return placeNightEggsToMax()
+            end)
+        else
+            placementOK = true
+            State.lastStatus = "✅ Garden already full."
+        end
+
+        if not State.enabled or State.tradeBusy then
+            State.cycleBusy = false
+            continue
+        end
+
+        local farmAfterPlacement = getFarmEggCount()
+
+        -- If the garden was empty and no egg was placed, do not sit for
+        -- five minutes waiting for a ready egg that cannot exist.
+        if farmBefore == 0 and farmAfterPlacement == 0 then
+            State.lastStatus = "🔴 No Night Eggs placed."
+            State.cycleBusy = false
+            task.wait(0.75)
+            continue
+        end
+
+        -- =========================================================
+        -- V52 CYCLE PHASE 2: REDUCTION TEAM + WAIT FOR READY EGGS.
         -- =========================================================
         local isReadyHatch = (#getReadyNightEggs() > 0)
 
-        -- =========================================================
-        -- V52 PHASE 2: Egg Reduction team.
-        -- If nothing is ready, equip the reduction team and wait.
-        -- =========================================================
         if not isReadyHatch then
             local reductionOK = false
 
@@ -3699,9 +3791,6 @@ Threads.main = task.spawn(function()
             end
         end
 
-        -- =========================================================
-        -- V52-style monitor: wait for eggs to become ready.
-        -- =========================================================
         local hatchWaitStart = os.clock()
         local hatchTimeout = 5 * 60
 
@@ -3709,6 +3798,12 @@ Threads.main = task.spawn(function()
             and not State.tradeBusy
             and #getReadyNightEggs() == 0
         do
+            -- While waiting, keep the farm topped up. This preserves the
+            -- "always max placement" behavior instead of waiting with holes.
+            if CONFIG.FAST_PLACEMENT then
+                pcall(placeNightEggsToMax)
+            end
+
             task.wait(0.5 + GetSafePing())
 
             if os.clock() - hatchWaitStart >= hatchTimeout then
@@ -3725,12 +3820,13 @@ Threads.main = task.spawn(function()
         end
 
         -- =========================================================
-        -- V52 PHASE 3: Koi/Ruby team.
+        -- V52 CYCLE PHASE 3: KOI/RUBY TEAM + HATCH.
         -- =========================================================
-        State.hatching = true
         local readyCount = #getReadyNightEggs()
 
         if readyCount > 0 then
+            State.hatching = true
+
             local koiOK = false
 
             pcall(function()
@@ -3747,9 +3843,7 @@ Threads.main = task.spawn(function()
 
             State.lastStatus = "⏳ Waiting for hatch buffs..."
 
-            -- V52 timing:
-            -- Fast + Ultra: 0.5s
-            -- Fast without Ultra: 2.5s
+            -- Same timing already used by the verified V52 transfer core.
             task.wait(
                 GetFastHatchMode()
                     and (GetUltraMode() and (0.5 + GetSafePing())
@@ -3763,46 +3857,39 @@ Threads.main = task.spawn(function()
                 continue
             end
 
-            -- =====================================================
-            -- V52 PHASE 4: hatch all available eggs.
-            -- =====================================================
+            -- Hatch every ready Night Egg.
             local hatched = hatchReadyNightEggs()
 
-            -- V52 locks the enhancement/pick-place system during hatch;
-            -- this dedicated script has no competing sell stage, so we
-            -- simply proceed to the transfer gift stage here.
+            -- The gift watcher is intentionally separate from the hatch
+            -- phase; run the direct post-hatch gift pass as V52 did.
             if hatched > 0 and State.autoGiftEnabled then
                 pcall(fastGiftAllNightEggPets)
             end
 
+            State.hatching = false
+
             -- =====================================================
-            -- V52 PHASE 5: fast egg placement starts immediately after
-            -- hatching when fast egg placement is enabled.
+            -- V52 CYCLE PHASE 4: REFILL IMMEDIATELY AFTER HATCH.
             -- =====================================================
             if State.enabled
                 and not State.tradeBusy
                 and CONFIG.FAST_PLACEMENT
             then
-                task.spawn(function()
-                    pcall(function()
-                        placeNightEggsToMax()
-                    end)
-                end)
+                State.lastStatus = "🥚 Refilling Garden to MAX..."
+                pcall(placeNightEggsToMax)
             end
+        else
+            State.hatching = false
         end
 
-        State.hatching = false
-
-        -- Rapid Gift is handled by its independent V52-style watcher.
-
-        -- Auto Pet Slot remains a parallel lightweight transfer helper.
-        if State.autoPetSlotEnabled and State.enabled and not State.autoSlotBusy then
+        -- Auto Pet Slot stays a separate helper.
+        if State.autoPetSlotEnabled and not State.autoSlotBusy then
             pcall(startAutoPetSlot)
         end
 
         State.cycleBusy = false
 
-        -- V52 fast mode uses only a small cadence between cycles.
+        -- Match the existing V52 fast/non-fast cadence.
         if GetFastHatchMode() then
             task.wait(0.5 + GetSafePing())
         else
@@ -3832,4 +3919,4 @@ pcall(refreshAutoAssignedTeams)
 State.lastStatus = "Auto Hatch is OFF."
 statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V13] Loaded — Auto Hatch OFF. V52 status board/UI/trade mechanics copied; anti-idle enabled; Rapid Gift locked to mysto_sailor; no pet selling.")
+print("[FABLE TRANSFER V15] Loaded — Auto Hatch OFF. V52 status board/UI/trade mechanics copied; anti-idle enabled; Rapid Gift locked to mysto_sailor; no pet selling.")
