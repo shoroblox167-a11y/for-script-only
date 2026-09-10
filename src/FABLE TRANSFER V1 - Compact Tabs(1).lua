@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V9
+    FABLE TRANSFER V10
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -48,12 +48,12 @@
       Farm.Important.Objects_Physical / PetEgg attributes
 ]]
 
-if getgenv and getgenv().FABLE_TRANSFER_V9 then
-    warn("[FABLE TRANSFER V9] Already loaded.")
+if getgenv and getgenv().FABLE_TRANSFER_V10 then
+    warn("[FABLE TRANSFER V10] Already loaded.")
     return
 end
 if getgenv then
-    getgenv().FABLE_TRANSFER_V9 = true
+    getgenv().FABLE_TRANSFER_V10 = true
 end
 
 if not game:IsLoaded() then
@@ -74,7 +74,7 @@ end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V9] Unsupported game.")
+    warn("[FABLE TRANSFER V10] Unsupported game.")
     return
 end
 
@@ -101,7 +101,7 @@ local okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V9] Failed to require DataService.")
+    warn("[FABLE TRANSFER V10] Failed to require DataService.")
     return
 end
 
@@ -109,7 +109,7 @@ local okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V9] Failed to require PetGiftingService.")
+    warn("[FABLE TRANSFER V10] Failed to require PetGiftingService.")
     return
 end
 
@@ -1296,7 +1296,7 @@ local function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V9] Gift error:", err)
+        warn("[FABLE TRANSFER V10] Gift error:", err)
     end
 
     State.autoGiftBusy = false
@@ -1951,8 +1951,8 @@ local function updatePlayerStatusUIV52()
 
         local mainFrame = Instance.new("Frame", gui)
         mainFrame.Name = "MainFrame"
-        mainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-        mainFrame.Position = UDim2.new(0.5, 0.5)
+        mainFrame.AnchorPoint = Vector2.new(0, 0.5)
+        mainFrame.Position = UDim2.new(0, 15, 0.3, 0)
         mainFrame.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
         mainFrame.BackgroundTransparency = 1
         mainFrame.BorderSizePixel = 0
@@ -2193,7 +2193,7 @@ end
 
 local uiParent = getUIParent()
 
-local oldUI = uiParent:FindFirstChild("FableTransferV9")
+local oldUI = uiParent:FindFirstChild("FableTransferV10")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
@@ -2201,7 +2201,7 @@ if oldUI then
 end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "FableTransferV9"
+ScreenGui.Name = "FableTransferV10"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.DisplayOrder = 9999
@@ -2211,8 +2211,8 @@ ScreenGui.Parent = uiParent
 local Main = Instance.new("Frame")
 Main.Name = "Main"
 Main.Size = UDim2.fromOffset(600, 480)
-Main.AnchorPoint= Vector2.new(0.5, 0.5,)
-Main.Position = UDim2.new(0.5, 0.5,)
+Main.AnchorPoint = Vector2.new(0.5, 0.5)
+Main.Position = UDim2.fromScale(0.5, 0.5)
 Main.BackgroundColor3 = Color3.fromRGB(11, 9, 18)
 Main.BackgroundTransparency = 0.04
 Main.BorderSizePixel = 0
@@ -2242,7 +2242,7 @@ Header.Parent = Main
 local Title = Instance.new("TextLabel")
 Title.BackgroundTransparency = 1
 Title.Position = UDim2.fromOffset(0, 0)
-Title.Size = UDim2.new(1, -200, 0, 26)
+Title.Size = UDim2.new(1, -250, 0, 26)
 Title.Font = Enum.Font.Code
 Title.Text = "Status"
 Title.TextColor3 = Color3.fromRGB(245, 243, 252)
@@ -3415,8 +3415,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V9_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V9_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V10_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V10_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -3571,13 +3571,13 @@ local function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V9 = nil
+        getgenv().FABLE_TRANSFER_V10 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V9_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V10_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -3750,4 +3750,4 @@ pcall(refreshAutoAssignedTeams)
 State.lastStatus = "Auto Hatch is OFF."
 statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V9] Loaded — Auto Hatch OFF. V52 status board/UI/trade mechanics copied; anti-idle enabled; Rapid Gift locked to mysto_sailor; no pet selling.")
+print("[FABLE TRANSFER V10] Loaded — Auto Hatch OFF. V52 status board/UI/trade mechanics copied; anti-idle enabled; Rapid Gift locked to mysto_sailor; no pet selling.")
