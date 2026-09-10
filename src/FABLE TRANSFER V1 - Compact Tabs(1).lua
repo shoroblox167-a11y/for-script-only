@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V25
+    FABLE TRANSFER V26
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -58,7 +58,7 @@
 -- while a pet is temporarily absent, so the same team catches up when it
 -- returns to the inventory.
 TransferHttpService = game:GetService("HttpService")
-TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V25_STATE.json"
+TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V26_STATE.json"
 PersistentTransferConfig = {
     enabled = false,
     autoGiftEnabled = true,
@@ -194,7 +194,7 @@ transferLoadPersistentState()
 
 if getgenv then
     local previousStops = {
-        getgenv().FABLE_TRANSFER_V25_STOP,
+        getgenv().FABLE_TRANSFER_V26_STOP,
         getgenv().FABLE_TRANSFER_V22_STOP,
         getgenv().FABLE_TRANSFER_V19_STOP,
         getgenv().FABLE_TRANSFER_V18_STOP,
@@ -210,15 +210,15 @@ if getgenv then
         end
     end
 
-    getgenv().FABLE_TRANSFER_V25 = nil
-    getgenv().FABLE_TRANSFER_V25_STOP = nil
+    getgenv().FABLE_TRANSFER_V26 = nil
+    getgenv().FABLE_TRANSFER_V26_STOP = nil
     getgenv().FABLE_TRANSFER_V22 = nil
     getgenv().FABLE_TRANSFER_V22_STOP = nil
     getgenv().FABLE_TRANSFER_V19 = nil
     getgenv().FABLE_TRANSFER_V19_STOP = nil
     getgenv().FABLE_TRANSFER_V18 = nil
     getgenv().FABLE_TRANSFER_V18_STOP = nil
-    getgenv().FABLE_TRANSFER_V25 = true
+    getgenv().FABLE_TRANSFER_V26 = true
 end
 
 if not game:IsLoaded() then
@@ -234,15 +234,15 @@ VirtualUser = game:GetService("VirtualUser")
 
 LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
-    warn("[FABLE TRANSFER V25] LocalPlayer is not available.")
-    if getgenv then getgenv().FABLE_TRANSFER_V25 = nil end
+    warn("[FABLE TRANSFER V26] LocalPlayer is not available.")
+    if getgenv then getgenv().FABLE_TRANSFER_V26 = nil end
     return
 end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V25] Unsupported game: " .. tostring(game.GameId))
-    if getgenv then getgenv().FABLE_TRANSFER_V25 = nil end
+    warn("[FABLE TRANSFER V26] Unsupported game: " .. tostring(game.GameId))
+    if getgenv then getgenv().FABLE_TRANSFER_V26 = nil end
     return
 end
 
@@ -274,8 +274,8 @@ okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V25] Failed to require DataService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V25 = nil end
+    warn("[FABLE TRANSFER V26] Failed to require DataService.")
+    if getgenv then getgenv().FABLE_TRANSFER_V26 = nil end
     return
 end
 
@@ -283,8 +283,8 @@ okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V25] Failed to require PetGiftingService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V25 = nil end
+    warn("[FABLE TRANSFER V26] Failed to require PetGiftingService.")
+    if getgenv then getgenv().FABLE_TRANSFER_V26 = nil end
     return
 end
 
@@ -345,7 +345,7 @@ CONFIG = {
     -- Small delays only; kept low for transfer speed.
     PLACE_STAGGER = 0.025,
     TEAM_SETTLE = 0.25,
-    GIFT_STAGGER = 0.08,
+    GIFT_STAGGER = 0.1,
     LOOP_IDLE = 0.15,
 }
 
@@ -1226,7 +1226,7 @@ function unequipAllGardenPets()
         task.wait(0.2)
     end
 
-    warn("[FABLE TRANSFER V25] Timeout removing existing garden pets.")
+    warn("[FABLE TRANSFER V26] Timeout removing existing garden pets.")
     return false
 end
 
@@ -1370,7 +1370,7 @@ function equipGardenTeam(team, teamName)
 
         State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
-        warn("[FABLE TRANSFER V25] Timeout equipping " .. tostring(teamName) .. " team.")
+        warn("[FABLE TRANSFER V26] Timeout equipping " .. tostring(teamName) .. " team.")
         return false
     end
 
@@ -1378,7 +1378,7 @@ function equipGardenTeam(team, teamName)
     State.teamEquipBusy = false
 
     if not ok then
-        warn("[FABLE TRANSFER V25] Team equip error:", result)
+        warn("[FABLE TRANSFER V26] Team equip error:", result)
         State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
         return false
@@ -1838,21 +1838,29 @@ function isPetUUIDInLiveInventory(uuid)
     return type(inventory) == "table" and inventory[tostring(uuid)] ~= nil
 end
 
-function waitForGiftUUIDCompletion(uuid)
-    local deadline = os.clock() + 8
+function pruneCompletedGiftLocks()
+    local inventory = getPetInventory(getData())
 
-    while not State.shuttingDown and os.clock() < deadline do
-        -- A completed gift removes the UUID from the sender's live inventory.
-        if not isPetUUIDInLiveInventory(uuid) then
+    for uuid in pairs(State.giftInFlight) do
+        if type(inventory) == "table"
+            and inventory[tostring(uuid)] == nil
+        then
             State.giftInFlight[tostring(uuid)] = nil
-            return true
         end
+    end
+end
 
-        task.wait(0.15)
+-- V26: non-blocking completion check.
+-- A successful UUID stays locked, but it does NOT block the next distinct
+-- UUID. The lock disappears as soon as the pet leaves the live inventory.
+function waitForGiftUUIDCompletion(uuid)
+    local normalizedUUID = tostring(uuid)
+
+    if not isPetUUIDInLiveInventory(normalizedUUID) then
+        State.giftInFlight[normalizedUUID] = nil
+        return true
     end
 
-    -- Keep the UUID locked when completion has not been observed. This is
-    -- intentional: a timed-out request must never be fired again immediately.
     return false
 end
 
@@ -1928,23 +1936,39 @@ function fastGiftAllNightEggPets()
     State.autoGiftBusy = true
 
     local ok, err = pcall(function()
+        local sentThisPass = 0
+
         while State.enabled
             and State.autoGiftEnabled
             and not State.tradeBusy
             and not State.hatching
             and not State.shuttingDown
         do
+            -- Release only UUIDs whose successful gift is now reflected in
+            -- the live inventory. This prevents duplicate GivePet calls while
+            -- allowing different UUIDs to be sent on the V52 rapid cadence.
+            pruneCompletedGiftLocks()
+
             local pets = collectNightEggPetEntries()
             if #pets == 0 then
                 break
             end
 
+            local sentAny = false
+
             for _, pet in ipairs(pets) do
-                if not State.enabled or State.tradeBusy or State.hatching then
+                if not State.enabled
+                    or State.tradeBusy
+                    or State.hatching
+                    or State.shuttingDown
+                then
                     break
                 end
 
                 local uuid = tostring(pet.uuid)
+
+                -- Hard UUID dedupe: never fire this UUID again while the
+                -- previous GivePet request is still in flight.
                 if State.giftInFlight[uuid] then
                     continue
                 end
@@ -1959,22 +1983,20 @@ function fastGiftAllNightEggPets()
                     continue
                 end
 
-                -- Do not call GivePet unless the exact pet tool is actually
-                -- being held. V52 uses the same held-tool test.
+                -- Same held-tool requirement used by the V52 gift path.
                 if not isToolHeldV52Style(tool) then
                     unequipTools()
 
                     local equipped = false
-                    for _ = 1, 5 do
+                    for _ = 1, 3 do
                         if equipTool(tool) and isToolHeldV52Style(tool) then
                             equipped = true
                             break
                         end
-                        task.wait(0.1)
+                        task.wait()
                     end
 
                     if not equipped then
-                        State.lastStatus = "⏳ Gift waiting for tool equip • " .. uuid
                         continue
                     end
                 end
@@ -1983,61 +2005,71 @@ function fastGiftAllNightEggPets()
                     continue
                 end
 
-                -- Lock BEFORE firing. This prevents the rapid-gift watcher or
-                -- the next inventory scan from submitting the same UUID again.
+                -- Reserve BEFORE GivePet. The lock remains until the UUID
+                -- disappears from live inventory, so a second watcher pass
+                -- cannot gift this same UUID again.
                 State.giftInFlight[uuid] = true
 
-                State.lastStatus = "⚡ Rapid Gift → "
+                State.lastStatus =
+                    "⚡ Rapid Gift → "
                     .. CONFIG.TARGET_GIFT_PLAYER
-                    .. " • " .. tostring(pet.petType)
+                    .. " • "
+                    .. tostring(pet.petType)
 
-                local sent = false
                 local sendOK, sendErr = pcall(function()
                     if not isToolHeldV52Style(tool) then
                         error("You are not holding the pet tool")
                     end
 
+                    -- Exact V52 service path.
                     PetGiftingService:GivePet(currentTarget)
-                    sent = true
                 end)
 
                 if not sendOK then
+                    -- A call that failed before being accepted must not leave
+                    -- the UUID permanently locked.
                     State.giftInFlight[uuid] = nil
-                    State.lastStatus = "❌ Gift failed • " .. tostring(sendErr)
+                    State.lastStatus =
+                        "❌ Gift failed • " .. tostring(sendErr)
                     unequipTools()
-                    task.wait(0.25)
+                    task.wait(0.1)
                     continue
                 end
 
-                -- One request at a time: wait for this UUID to leave the live
-                -- inventory before another request can be sent.
-                local completed = waitForGiftUUIDCompletion(uuid)
+                sentAny = true
+                sentThisPass += 1
+
+                -- V52 rapid-gift cadence: yield, unequip, then move directly
+                -- to the next distinct pet. Do NOT wait for inventory removal.
+                task.wait(CONFIG.GIFT_STAGGER)
                 unequipTools()
 
-                if completed then
-                    State.lastStatus = "✅ Gift completed • " .. tostring(pet.petType)
-                else
-                    State.lastStatus = "⏳ Gift pending • UUID locked"
-                end
-
-                if not sent then
-                    State.giftInFlight[uuid] = nil
-                end
-
-                task.wait(CONFIG.GIFT_STAGGER)
+                -- Keep the lock until pruneCompletedGiftLocks() observes that
+                -- this UUID has left the live inventory.
             end
 
-            task.wait(0.05)
+            if not sentAny then
+                break
+            end
+
+            -- V52's rapid loop immediately checks again after the batch.
+            task.wait()
+        end
+
+        if sentThisPass > 0 then
+            State.lastStatus =
+                "✅ Rapid Gift sent " .. tostring(sentThisPass)
+                .. " pet" .. (sentThisPass == 1 and "" or "s")
+                .. " this pass."
         end
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V25] Gift error:", err)
+        warn("[FABLE TRANSFER V26] Gift error:", err)
     end
 
     State.autoGiftBusy = false
 end
-
 
 Threads.rapidGift = task.spawn(function()
     while not State.shuttingDown do
@@ -2052,7 +2084,7 @@ Threads.rapidGift = task.spawn(function()
         then
             pcall(fastGiftAllNightEggPets)
         end
-        task.wait(0.1)
+        task.wait()
     end
 end)
 
@@ -2994,7 +3026,7 @@ if staleV22UI then
     pcall(function() staleV22UI:Destroy() end)
 end
 
-oldUI = uiParent:FindFirstChild("FableTransferV25")
+oldUI = uiParent:FindFirstChild("FableTransferV26")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
@@ -3004,7 +3036,7 @@ end
 ScreenGui = nil
 okGui, guiErr = pcall(function()
     ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "FableTransferV25"
+    ScreenGui.Name = "FableTransferV26"
     ScreenGui.ResetOnSpawn = false
     ScreenGui.IgnoreGuiInset = true
     ScreenGui.DisplayOrder = 9999
@@ -3013,12 +3045,12 @@ okGui, guiErr = pcall(function()
 end)
 
 if not okGui or not ScreenGui then
-    warn("[FABLE TRANSFER V25] GUI creation failed: " .. tostring(guiErr))
-    if getgenv then getgenv().FABLE_TRANSFER_V25 = nil end
+    warn("[FABLE TRANSFER V26] GUI creation failed: " .. tostring(guiErr))
+    if getgenv then getgenv().FABLE_TRANSFER_V26 = nil end
     return
 end
 
-print("[FABLE TRANSFER V25] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
+print("[FABLE TRANSFER V26] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
 
 Main = Instance.new("Frame")
 Main.Name = "Main"
@@ -3832,7 +3864,7 @@ Varz.StartHatchingSystem = function()
     -- the correct team before progressing.
     task.defer(prepareInitialHatchTeam)
 
-    print("[FABLE TRANSFER V25] Auto Hatch enabled.")
+    print("[FABLE TRANSFER V26] Auto Hatch enabled.")
     return true
 end
 
@@ -3847,7 +3879,7 @@ Varz.StopHatchingSystem = function()
     pcall(transferSavePersistentState)
     v20StatusNow()
 
-    print("[FABLE TRANSFER V25] Auto Hatch stopped.")
+    print("[FABLE TRANSFER V26] Auto Hatch stopped.")
     return true
 end
 
@@ -4390,8 +4422,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V25_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V25_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V26_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V26_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -4549,13 +4581,13 @@ function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V25 = nil
+        getgenv().FABLE_TRANSFER_V26 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V25_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V26_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -4841,4 +4873,4 @@ else
 end
 statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V25] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
+print("[FABLE TRANSFER V26] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
