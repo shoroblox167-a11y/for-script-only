@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V5
+    FABLE TRANSFER V9
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -9,6 +9,12 @@
       • V52 TradeRequest ticket accept path restored
       • V52 in-trade accept/confirm path restored
       • Trade watchers operate independently of Auto Hatch
+
+    V6 additions:
+      • V52-style Status Board wired to the real Transfer state
+      • V52-sized 720x600 main GUI
+      • Anti-idle + best-effort client-side anti-kick protection
+      • Live selected-pet panels for both 8-slot transfer teams
 
     Locked workflow:
       • Night Egg only
@@ -42,12 +48,12 @@
       Farm.Important.Objects_Physical / PetEgg attributes
 ]]
 
-if getgenv and getgenv().FABLE_TRANSFER_V5 then
-    warn("[FABLE TRANSFER V5] Already loaded.")
+if getgenv and getgenv().FABLE_TRANSFER_V9 then
+    warn("[FABLE TRANSFER V9] Already loaded.")
     return
 end
 if getgenv then
-    getgenv().FABLE_TRANSFER_V5 = true
+    getgenv().FABLE_TRANSFER_V9 = true
 end
 
 if not game:IsLoaded() then
@@ -59,6 +65,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
+local VirtualUser = game:GetService("VirtualUser")
 
 local LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
@@ -67,7 +74,7 @@ end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V5] Unsupported game.")
+    warn("[FABLE TRANSFER V9] Unsupported game.")
     return
 end
 
@@ -94,7 +101,7 @@ local okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V5] Failed to require DataService.")
+    warn("[FABLE TRANSFER V9] Failed to require DataService.")
     return
 end
 
@@ -102,7 +109,7 @@ local okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V5] Failed to require PetGiftingService.")
+    warn("[FABLE TRANSFER V9] Failed to require PetGiftingService.")
     return
 end
 
@@ -215,10 +222,73 @@ local State = {
     cycleBusy = false,
 
     lastStatus = "Starting...",
+
+    -- V6 anti-idle / best-effort client kick protection.
+    antiIdleEnabled = true,
+    antiKickEnabled = true,
+
+    -- V6 Status Board state.
+    statusStartedAt = os.clock(),
+    statusLastMessage = "",
+    statusFeedLines = {},
+    statusLatest = "Fable Status initialized",
+
+    -- Live selected team labels.
+    reductionSelectedLabels = {},
+    koiSelectedLabels = {},
 }
 
 local Connections = {}
 local Threads = {}
+
+---------------------------------------------------------------------
+-- V6 ANTI-IDLE / BEST-EFFORT CLIENT KICK PROTECTION
+---------------------------------------------------------------------
+
+-- Roblox fires LocalPlayer.Idled after prolonged inactivity. This keeps the
+-- client active without moving the character or touching the transfer flow.
+Connections.antiIdle = LocalPlayer.Idled:Connect(function()
+    if not State.antiIdleEnabled or State.shuttingDown then
+        return
+    end
+
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new(0, 0))
+    end)
+end)
+
+-- This only covers client-side Player:Kick()/LocalPlayer:Kick() namecalls.
+-- A server-side kick cannot be reliably blocked from a client script.
+if hookmetamethod and newcclosure and getnamecallmethod and getgenv then
+    pcall(function()
+        getgenv().__FABLE_V6_ANTIKICK_CONTROLLER = {
+            enabled = true,
+            player = LocalPlayer,
+        }
+
+        if not getgenv().__FABLE_V6_ANTIKICK_HOOKED then
+            getgenv().__FABLE_V6_ANTIKICK_HOOKED = true
+
+            local oldNamecall
+            oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+                local method = getnamecallmethod()
+                local controller = getgenv().__FABLE_V6_ANTIKICK_CONTROLLER
+
+                if controller
+                    and controller.enabled
+                    and controller.player
+                    and self == controller.player
+                    and method == "Kick"
+                then
+                    return nil
+                end
+
+                return oldNamecall(self, ...)
+            end))
+        end
+    end)
+end
 
 ---------------------------------------------------------------------
 -- CHARACTER / INVENTORY HELPERS
@@ -1226,7 +1296,7 @@ local function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V5] Gift error:", err)
+        warn("[FABLE TRANSFER V9] Gift error:", err)
     end
 
     State.autoGiftBusy = false
@@ -2123,7 +2193,7 @@ end
 
 local uiParent = getUIParent()
 
-local oldUI = uiParent:FindFirstChild("FableTransferV5")
+local oldUI = uiParent:FindFirstChild("FableTransferV9")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
@@ -2131,7 +2201,7 @@ if oldUI then
 end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "FableTransferV5"
+ScreenGui.Name = "FableTransferV9"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.DisplayOrder = 9999
@@ -2140,81 +2210,187 @@ ScreenGui.Parent = uiParent
 
 local Main = Instance.new("Frame")
 Main.Name = "Main"
-Main.Size = UDim2.fromOffset(350, 280)
-Main.Position = UDim2.new(0.5, -175, 0, 28)
+Main.Size = UDim2.fromOffset(600, 480)
+Main.Position = UDim2.new(0.5, -300, 0.5, -240)
 Main.BackgroundColor3 = Color3.fromRGB(11, 9, 18)
 Main.BackgroundTransparency = 0.04
 Main.BorderSizePixel = 0
 Main.Parent = ScreenGui
 
+local MainScale = Instance.new("UIScale")
+MainScale.Name = "V52CompactScale"
+MainScale.Scale = 0.78
+MainScale.Parent = Main
+
 local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0, 12)
+MainCorner.CornerRadius = UDim.new(0, 4)
 MainCorner.Parent = Main
 
 local MainStroke = Instance.new("UIStroke")
-MainStroke.Thickness = 1.5
+MainStroke.Thickness = 1.25
 MainStroke.Color = Color3.fromRGB(178, 105, 248)
 MainStroke.Transparency = 0.12
 MainStroke.Parent = Main
 
 local Header = Instance.new("Frame")
 Header.BackgroundTransparency = 1
-Header.Position = UDim2.fromOffset(10, 8)
-Header.Size = UDim2.new(1, -20, 0, 28)
+Header.Position = UDim2.fromOffset(190, 8)
+Header.Size = UDim2.new(1, -200, 0, 58)
 Header.Parent = Main
 
 local Title = Instance.new("TextLabel")
 Title.BackgroundTransparency = 1
-Title.Size = UDim2.new(1, -38, 1, 0)
-Title.Font = Enum.Font.GothamBold
-Title.Text = "FABLE TRANSFER V5"
-Title.TextColor3 = Color3.fromRGB(231, 214, 255)
+Title.Position = UDim2.fromOffset(0, 0)
+Title.Size = UDim2.new(1, -250, 0, 26)
+Title.Font = Enum.Font.Code
+Title.Text = "Status"
+Title.TextColor3 = Color3.fromRGB(245, 243, 252)
 Title.TextSize = 16
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = Header
 
+local Subtitle = Instance.new("TextLabel")
+Subtitle.BackgroundTransparency = 1
+Subtitle.Position = UDim2.fromOffset(0, 25)
+Subtitle.Size = UDim2.new(1, -250, 0, 24)
+Subtitle.Font = Enum.Font.Code
+Subtitle.Text = "Live Fable status feed"
+Subtitle.TextColor3 = Color3.fromRGB(145, 136, 160)
+Subtitle.TextSize = 11
+Subtitle.TextXAlignment = Enum.TextXAlignment.Left
+Subtitle.Parent = Header
+
+local SearchBox = Instance.new("TextBox")
+SearchBox.Name = "Search"
+SearchBox.Position = UDim2.new(1, -190, 0, 0)
+SearchBox.Size = UDim2.fromOffset(180, 40)
+SearchBox.BackgroundColor3 = Color3.fromRGB(11, 9, 18)
+SearchBox.BackgroundTransparency = 0.04
+SearchBox.BorderSizePixel = 0
+SearchBox.ClearTextOnFocus = false
+SearchBox.Font = Enum.Font.Code
+SearchBox.PlaceholderText = "⌕  Search all settings..."
+SearchBox.PlaceholderColor3 = Color3.fromRGB(120, 112, 136)
+SearchBox.Text = ""
+SearchBox.TextColor3 = Color3.fromRGB(235, 231, 242)
+SearchBox.TextSize = 11
+SearchBox.TextXAlignment = Enum.TextXAlignment.Left
+SearchBox.Parent = Header
+
+local SearchCorner = Instance.new("UICorner")
+SearchCorner.CornerRadius = UDim.new(0, 9)
+SearchCorner.Parent = SearchBox
+
+local SearchStroke = Instance.new("UIStroke")
+SearchStroke.Color = Color3.fromRGB(178, 105, 248)
+SearchStroke.Thickness = 1
+SearchStroke.Transparency = 0.12
+SearchStroke.Parent = SearchBox
+
 local Close = Instance.new("TextButton")
-Close.Size = UDim2.fromOffset(26, 26)
-Close.Position = UDim2.new(1, -26, 0, 0)
-Close.BackgroundColor3 = Color3.fromRGB(40, 35, 48)
+Close.Name = "Close"
+Close.Size = UDim2.fromOffset(26, 24)
+Close.Position = UDim2.new(1, -28, 0, 43)
+Close.BackgroundTransparency = 1
 Close.BorderSizePixel = 0
+Close.AutoButtonColor = false
 Close.Text = "×"
-Close.TextColor3 = Color3.fromRGB(220, 215, 230)
+Close.TextColor3 = Color3.fromRGB(175, 165, 190)
 Close.Font = Enum.Font.GothamBold
 Close.TextSize = 18
 Close.Parent = Header
 
-local CloseCorner = Instance.new("UICorner")
-CloseCorner.CornerRadius = UDim.new(0, 7)
-CloseCorner.Parent = Close
+Close.MouseButton1Click:Connect(function()
+    if ScreenGui then
+        ScreenGui.Enabled = false
+    end
+end)
 
-local TabsBar = Instance.new("Frame")
-TabsBar.BackgroundTransparency = 1
-TabsBar.Position = UDim2.fromOffset(10, 40)
-TabsBar.Size = UDim2.new(1, -20, 0, 28)
-TabsBar.Parent = Main
+local Sidebar = Instance.new("Frame")
+Sidebar.Name = "Sidebar"
+Sidebar.Position = UDim2.fromOffset(0, 0)
+Sidebar.Size = UDim2.fromOffset(180, 500)
+Sidebar.BackgroundColor3 = Color3.fromRGB(8, 7, 13)
+Sidebar.BackgroundTransparency = 0.02
+Sidebar.BorderSizePixel = 0
+Sidebar.Parent = Main
 
-local TabNames = {"Transfer", "Pet Teams", "Settings"}
+local SidebarStroke = Instance.new("UIStroke")
+SidebarStroke.Color = Color3.fromRGB(178, 105, 248)
+SidebarStroke.Thickness = 1
+SidebarStroke.Transparency = 0.35
+SidebarStroke.Parent = Sidebar
+
+local SidebarTitle = Instance.new("TextLabel")
+SidebarTitle.BackgroundTransparency = 1
+SidebarTitle.Position = UDim2.fromOffset(20, 24)
+SidebarTitle.Size = UDim2.new(1, -40, 0, 30)
+SidebarTitle.Font = Enum.Font.Code
+SidebarTitle.Text = "FABLE"
+SidebarTitle.TextColor3 = Color3.fromRGB(245, 243, 252)
+SidebarTitle.TextSize = 18
+SidebarTitle.TextXAlignment = Enum.TextXAlignment.Center
+SidebarTitle.Parent = Sidebar
+
+local TabHolder = Instance.new("Frame")
+TabHolder.BackgroundTransparency = 1
+TabHolder.Position = UDim2.fromOffset(8, 70)
+TabHolder.Size = UDim2.new(1, -16, 1, -82)
+TabHolder.Parent = Sidebar
+
+local TabLayout = Instance.new("UIListLayout")
+TabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+TabLayout.Padding = UDim.new(0, 5)
+TabLayout.Parent = TabHolder
+
+local TabNames = {"Status Board", "Transfer", "Pet Teams", "Settings"}
 local TabButtons = {}
 local Pages = {}
+
+local TabMeta = {
+    ["Status Board"] = {"∿", "Status"},
+    ["Transfer"] = {"⌁", "Automation"},
+    ["Pet Teams"] = {"♧", "Teams"},
+    ["Settings"] = {"⚙", "Settings"},
+}
 
 local function makeTabButton(name, index)
     local button = Instance.new("TextButton")
     button.Name = name:gsub("%s+", "") .. "Tab"
-    button.Size = UDim2.new(1 / #TabNames, -4, 1, 0)
-    button.Position = UDim2.new((index - 1) / #TabNames, (index - 1) * 2, 0, 0)
-    button.BackgroundColor3 = Color3.fromRGB(35, 30, 44)
+    button.Size = UDim2.new(1, 0, 0, 42)
+    button.LayoutOrder = index
+    button.BackgroundColor3 = Color3.fromRGB(15, 13, 22)
     button.BorderSizePixel = 0
-    button.AutoButtonColor = true
-    button.Text = name
-    button.TextColor3 = Color3.fromRGB(165, 155, 180)
-    button.Font = Enum.Font.GothamSemibold
-    button.TextSize = 10
-    button.Parent = TabsBar
+    button.AutoButtonColor = false
+    button.Text = ""
+    button.Parent = TabHolder
 
     local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 7)
+    corner.CornerRadius = UDim.new(0, 6)
     corner.Parent = button
+
+    local icon = Instance.new("TextLabel")
+    icon.Name = "Icon"
+    icon.BackgroundTransparency = 1
+    icon.Position = UDim2.fromOffset(12, 0)
+    icon.Size = UDim2.fromOffset(26, 42)
+    icon.Font = Enum.Font.Gotham
+    icon.Text = TabMeta[name][1]
+    icon.TextColor3 = Color3.fromRGB(105, 96, 120)
+    icon.TextSize = 17
+    icon.Parent = button
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.fromOffset(44, 0)
+    label.Size = UDim2.new(1, -54, 1, 0)
+    label.Font = Enum.Font.Code
+    label.Text = TabMeta[name][2]
+    label.TextColor3 = Color3.fromRGB(145, 136, 160)
+    label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = button
 
     TabButtons[name] = button
     return button
@@ -2226,9 +2402,78 @@ end
 
 local PagesHolder = Instance.new("Frame")
 PagesHolder.BackgroundTransparency = 1
-PagesHolder.Position = UDim2.fromOffset(10, 74)
-PagesHolder.Size = UDim2.new(1, -20, 1, -84)
+PagesHolder.Position = UDim2.fromOffset(190, 74)
+PagesHolder.Size = UDim2.new(1, -200, 1, -84)
 PagesHolder.Parent = Main
+
+---------------------------------------------------------------------
+-- V52-STYLE FLOATING F TOGGLE
+---------------------------------------------------------------------
+
+local FloatingToggle = Instance.new("TextButton")
+FloatingToggle.Name = "FableToggle"
+FloatingToggle.AnchorPoint = Vector2.new(0, 0)
+FloatingToggle.Position = UDim2.fromScale(0.012, 0.16)
+FloatingToggle.Size = UDim2.fromOffset(56, 56)
+FloatingToggle.BackgroundColor3 = Color3.fromRGB(10, 9, 15)
+FloatingToggle.BackgroundTransparency = 0.04
+FloatingToggle.BorderSizePixel = 0
+FloatingToggle.AutoButtonColor = false
+FloatingToggle.Text = ""
+FloatingToggle.ZIndex = 100
+FloatingToggle.Parent = ScreenGui
+
+local floatingCorner = Instance.new("UICorner")
+floatingCorner.CornerRadius = UDim.new(1, 0)
+floatingCorner.Parent = FloatingToggle
+
+local floatingStroke = Instance.new("UIStroke")
+floatingStroke.Thickness = 2
+floatingStroke.Transparency = 0.05
+floatingStroke.Color = Color3.fromRGB(178, 105, 248)
+floatingStroke.Parent = FloatingToggle
+
+local floatingInner = Instance.new("Frame")
+floatingInner.AnchorPoint = Vector2.new(0.5, 0.5)
+floatingInner.Position = UDim2.fromScale(0.5, 0.5)
+floatingInner.Size = UDim2.fromScale(0.74, 0.74)
+floatingInner.BackgroundColor3 = Color3.fromRGB(28, 22, 37)
+floatingInner.BorderSizePixel = 0
+floatingInner.ZIndex = 101
+floatingInner.Parent = FloatingToggle
+
+local floatingInnerCorner = Instance.new("UICorner")
+floatingInnerCorner.CornerRadius = UDim.new(1, 0)
+floatingInnerCorner.Parent = floatingInner
+
+local floatingBrand = Instance.new("TextLabel")
+floatingBrand.BackgroundTransparency = 1
+floatingBrand.Size = UDim2.fromScale(1, 1)
+floatingBrand.Font = Enum.Font.GothamBlack
+floatingBrand.Text = "F"
+floatingBrand.TextColor3 = Color3.fromRGB(191, 145, 255)
+floatingBrand.TextScaled = true
+floatingBrand.ZIndex = 102
+floatingBrand.Parent = floatingInner
+
+local function setMainVisible(visible)
+    Main.Visible = visible
+    FloatingToggle.Visible = true
+end
+
+FloatingToggle.Activated:Connect(function()
+    setMainVisible(not Main.Visible)
+end)
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then
+        return
+    end
+
+    if input.KeyCode == Enum.KeyCode.RightControl then
+        setMainVisible(not Main.Visible)
+    end
+end)
 
 local function makePage(name)
     local page = Instance.new("Frame")
@@ -2241,6 +2486,7 @@ local function makePage(name)
     return page
 end
 
+local StatusPage = makePage("Status Board")
 local TransferPage = makePage("Transfer")
 local TeamsPage = makePage("Pet Teams")
 local SettingsPage = makePage("Settings")
@@ -2368,8 +2614,308 @@ local function makeToggle(parent, y, labelText, defaultValue, callback)
     }
 end
 
+-- Status Board page.
+-- V7 ports the V52 visual composition instead of recreating its
+-- two-column field layout: one STATUS BOARD group on the left,
+-- LIVE FEED on the right, and LATEST MESSAGE inside the left group.
+
+local statusLeft = makeSection(StatusPage, "STATUS BOARD", 0, 444)
+statusLeft.Size = UDim2.new(0.56, -4, 0, 444)
+
+local statusRight = makeSection(StatusPage, "LIVE FEED", 0, 444)
+statusRight.Position = UDim2.new(0.56, 4, 0, 0)
+statusRight.Size = UDim2.new(0.44, -4, 0, 444)
+
+local statusStateLabel = Instance.new("TextLabel")
+statusStateLabel.BackgroundTransparency = 1
+statusStateLabel.Position = UDim2.fromOffset(12, 24)
+statusStateLabel.Size = UDim2.new(1, -24, 0, 24)
+statusStateLabel.Font = Enum.Font.GothamBold
+statusStateLabel.Text = "🛑 STOP  •  @" .. tostring(LocalPlayer.Name)
+statusStateLabel.TextColor3 = Color3.fromRGB(255, 84, 98)
+statusStateLabel.TextSize = 16
+statusStateLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusStateLabel.Parent = statusLeft
+
+local statusDetails = Instance.new("TextLabel")
+statusDetails.BackgroundTransparency = 1
+statusDetails.Position = UDim2.fromOffset(12, 62)
+statusDetails.Size = UDim2.new(1, -24, 0, 250)
+statusDetails.Font = Enum.Font.GothamBold
+statusDetails.Text = ""
+statusDetails.TextColor3 = Color3.fromRGB(245, 243, 252)
+statusDetails.TextSize = 11
+statusDetails.TextWrapped = true
+statusDetails.TextXAlignment = Enum.TextXAlignment.Left
+statusDetails.TextYAlignment = Enum.TextYAlignment.Top
+statusDetails.RichText = true
+statusDetails.Parent = statusLeft
+
+local statusDivider = Instance.new("Frame")
+statusDivider.BorderSizePixel = 0
+statusDivider.BackgroundColor3 = Color3.fromRGB(178, 105, 248)
+statusDivider.BackgroundTransparency = 0.25
+statusDivider.Position = UDim2.fromOffset(12, 322)
+statusDivider.Size = UDim2.new(1, -24, 0, 1)
+statusDivider.Parent = statusLeft
+
+local statusLatestTitle = Instance.new("TextLabel")
+statusLatestTitle.BackgroundTransparency = 1
+statusLatestTitle.Position = UDim2.fromOffset(12, 338)
+statusLatestTitle.Size = UDim2.new(1, -24, 0, 20)
+statusLatestTitle.Font = Enum.Font.GothamBold
+statusLatestTitle.Text = "LATEST MESSAGE"
+statusLatestTitle.TextColor3 = Color3.fromRGB(177, 136, 255)
+statusLatestTitle.TextSize = 10
+statusLatestTitle.TextXAlignment = Enum.TextXAlignment.Left
+statusLatestTitle.Parent = statusLeft
+
+local statusLatestLabel = Instance.new("TextLabel")
+statusLatestLabel.BackgroundTransparency = 1
+statusLatestLabel.Position = UDim2.fromOffset(12, 360)
+statusLatestLabel.Size = UDim2.new(1, -24, 0, 66)
+statusLatestLabel.Font = Enum.Font.GothamBold
+statusLatestLabel.Text = "[--:--:--]  Waiting for Fable activity..."
+statusLatestLabel.TextColor3 = Color3.fromRGB(245, 243, 252)
+statusLatestLabel.TextSize = 10
+statusLatestLabel.TextWrapped = true
+statusLatestLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLatestLabel.TextYAlignment = Enum.TextYAlignment.Top
+statusLatestLabel.RichText = true
+statusLatestLabel.Parent = statusLeft
+
+local statusFeedLabel = Instance.new("TextLabel")
+statusFeedLabel.BackgroundTransparency = 1
+statusFeedLabel.Position = UDim2.fromOffset(12, 30)
+statusFeedLabel.Size = UDim2.new(1, -24, 1, -42)
+statusFeedLabel.Font = Enum.Font.Code
+statusFeedLabel.Text = "[--:--:--]  Waiting for Fable activity..."
+statusFeedLabel.TextColor3 = Color3.fromRGB(214, 209, 224)
+statusFeedLabel.TextSize = 10
+statusFeedLabel.TextWrapped = true
+statusFeedLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusFeedLabel.TextYAlignment = Enum.TextYAlignment.Top
+statusFeedLabel.RichText = true
+statusFeedLabel.Parent = statusRight
+
+local statusFields = {
+    {"Current Stage", "IDLE"},
+    {"Sub Task", "Waiting for Auto Hatch..."},
+    {"Eggs on Farm", "0 / 0"},
+    {"Ready Eggs", "0"},
+    {"Pets in Inventory", "0 / 0"},
+    {"Selected Egg", "Night Egg × 0"},
+    {"Hatch Team", "None"},
+    {"Next Action", "Enable Auto Hatch"},
+    {"Uptime", "00:00:00"},
+}
+
+local statusValues = {}
+for _, pair in ipairs(statusFields) do
+    statusValues[pair[1]] = pair[2]
+end
+
+local function renderStatusDetails()
+    local order = {
+        "Current Stage",
+        "Sub Task",
+        "Eggs on Farm",
+        "Ready Eggs",
+        "Pets in Inventory",
+        "Selected Egg",
+        "Hatch Team",
+        "Next Action",
+        "Uptime",
+    }
+
+    local output = {}
+
+    for _, key in ipairs(order) do
+        local value = tostring(statusValues[key] or "")
+
+        local valueColor = "#F5F3FC"
+        if key == "Current Stage"
+            or key == "Selected Egg"
+            or key == "Hatch Team"
+        then
+            valueColor = "#AB60FF"
+        end
+
+        output[#output + 1] =
+            "<b>" .. key .. "</b>  •  "
+            .. "<font color='" .. valueColor .. "'>"
+            .. value
+            .. "</font>"
+    end
+
+    statusDetails.Text = table.concat(output, "\n")
+end
+
+renderStatusDetails()
+
+local function statusFormatUptime(seconds)
+    local elapsed = math.max(0, math.floor(seconds or 0))
+    local hours = math.floor(elapsed / 3600)
+    elapsed %= 3600
+    local minutes = math.floor(elapsed / 60)
+    local secs = elapsed % 60
+    return string.format("%02d:%02d:%02d", hours, minutes, secs)
+end
+
+local function statusGetStage()
+    if not State.enabled then
+        return "IDLE"
+    end
+
+    if State.tradeBusy then
+        return "TRADE"
+    end
+
+    if State.hatching then
+        return "HATCH"
+    end
+
+    if State.currentGardenTeamName == "Reduction" then
+        return "REDUCTION"
+    end
+
+    if State.currentGardenTeamName == "Koi" then
+        return "KOI"
+    end
+
+    if getFarmEggCount() >= (getMaxEggCapacity(getData()) or 0) then
+        return "MAX"
+    end
+
+    return "PLACE"
+end
+
+local function statusGetNextAction(stage)
+    if not State.enabled then
+        return "Enable Auto Hatch"
+    end
+
+    if State.tradeBusy then
+        return "Handling arimabns trade..."
+    end
+
+    if stage == "REDUCTION" then
+        return "Waiting for Night Eggs..."
+    elseif stage == "HATCH" then
+        return "Processing ready Night Eggs..."
+    elseif stage == "KOI" then
+        return "Applying Koi/Ruby team..."
+    elseif stage == "MAX" then
+        return "Waiting for eggs to finish..."
+    elseif stage == "PLACE" then
+        return "Filling garden to MAX..."
+    end
+
+    return "Continue transfer cycle..."
+end
+
+local function statusPush(message)
+    message = tostring(message or "")
+    if message == "" or message == State.statusLastMessage then
+        return
+    end
+
+    State.statusLastMessage = message
+    local timestamp = os.date("%H:%M:%S")
+    local line = string.format("[%s]  %s", timestamp, message)
+
+    table.insert(State.statusFeedLines, 1, line)
+    while #State.statusFeedLines > 10 do
+        table.remove(State.statusFeedLines)
+    end
+
+    State.statusLatest = line
+end
+
+local function statusRebuildFeed()
+    if #State.statusFeedLines == 0 then
+        statusFeedLabel.Text = "[--:--:--]  Waiting for Fable activity..."
+        return
+    end
+
+    local output = {}
+    for _, line in ipairs(State.statusFeedLines) do
+        local stamp, body = line:match("^%[([^%]]+)%]%s+(.*)$")
+        if stamp then
+            output[#output + 1] = string.format(
+                '<font color="#9C97B0">[%s]</font>  %s',
+                stamp,
+                body
+            )
+        else
+            output[#output + 1] = line
+        end
+    end
+
+    statusFeedLabel.Text = table.concat(output, "\n")
+end
+
+local function updateStatusBoard()
+    local data = getData()
+    local inventory = getPetInventory(data)
+    local farmCount = getFarmEggCount()
+    local maxEggs = getMaxEggCapacity(data)
+    local readyCount = #getReadyNightEggs()
+    local inventoryCount = 0
+    for _ in pairs(inventory or {}) do
+        inventoryCount += 1
+    end
+
+    local maxInventory = 0
+    pcall(function()
+        local petsData = getPetsData(data)
+        local stats = petsData and petsData.MutableStats
+        if type(stats) == "table" then
+            maxInventory = tonumber(stats.MaxPetsInInventory) or 0
+        end
+    end)
+
+    local eggTool = getNightEggTool()
+    local eggUses = getEggToolUses(eggTool)
+    local stage = statusGetStage()
+    local latest = State.statusLatest
+
+    statusValues["Current Stage"] = stage
+    statusValues["Sub Task"] = State.lastStatus or "Working..."
+    statusValues["Eggs on Farm"] = string.format("%d / %d", farmCount, maxEggs)
+    statusValues["Ready Eggs"] = tostring(readyCount)
+    statusValues["Pets in Inventory"] = string.format("%d / %d", inventoryCount, maxInventory)
+    statusValues["Selected Egg"] = string.format("%s × %d", CONFIG.DEFAULT_EGG, eggUses)
+    statusValues["Hatch Team"] = State.currentGardenTeamName or "None"
+    statusValues["Next Action"] = statusGetNextAction(stage)
+    statusValues["Uptime"] = statusFormatUptime(os.clock() - State.statusStartedAt)
+
+    local running = State.enabled
+    statusStateLabel.Text = running
+        and ("● RUNNING  •  @" .. tostring(LocalPlayer.Name))
+        or ("🛑 STOP  •  @" .. tostring(LocalPlayer.Name))
+    statusStateLabel.TextColor3 = running
+        and Color3.fromRGB(40, 238, 145)
+        or Color3.fromRGB(255, 84, 98)
+
+    statusLatestLabel.Text = latest
+    renderStatusDetails()
+    statusPush(State.lastStatus)
+    statusRebuildFeed()
+end
+
+Threads.statusBoard = task.spawn(function()
+    while not State.shuttingDown do
+        pcall(updateStatusBoard)
+        task.wait(0.25)
+    end
+end)
+
+statusPush("Fable Status initialized")
+statusRebuildFeed()
+
 -- Transfer page.
-local transferSection = makeSection(TransferPage, "TRANSFER", 0, 145)
+local transferSection = makeSection(TransferPage, "TRANSFER", 0, 185)
 
 local autoHatchToggle = makeToggle(
     transferSection,
@@ -2394,16 +2940,16 @@ local transferModeLabel = makeLine(transferSection, 82, "Placement", CONFIG.FAST
 local transferMaxLabel = makeLine(transferSection, 103, "Garden", "MAX")
 local transferTeamLabel = makeLine(transferSection, 124, "Team", "None")
 
-local statusSection = makeSection(TransferPage, "STATUS", 153, 66)
+local statusSection = makeSection(TransferPage, "STATUS", 193, 86)
 
 local statusLabel = Instance.new("TextLabel")
 statusLabel.BackgroundTransparency = 1
 statusLabel.Position = UDim2.fromOffset(10, 25)
-statusLabel.Size = UDim2.new(1, -20, 0, 33)
+statusLabel.Size = UDim2.new(1, -20, 0, 48)
 statusLabel.Font = Enum.Font.GothamMedium
 statusLabel.Text = "Auto Hatch is OFF"
 statusLabel.TextColor3 = Color3.fromRGB(225, 220, 235)
-statusLabel.TextSize = 9
+statusLabel.TextSize = 10
 statusLabel.TextWrapped = true
 statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.TextYAlignment = Enum.TextYAlignment.Center
@@ -2412,99 +2958,244 @@ statusLabel.Parent = statusSection
 local updateTeamPage
 
 -- Pet Teams page.
-local teamTop = makeSection(TeamsPage, "AUTO ASSIGN • 8 SLOTS", 0, 58)
+local teamTop = makeSection(TeamsPage, "AUTO ASSIGN TEAMS", 0, 42)
 
 local autoAssignToggle = makeToggle(
-    teamTop, 25, "Auto Assign Teams", State.autoAssignTeamsEnabled,
+    teamTop, 22, "Auto Assign Teams", State.autoAssignTeamsEnabled,
     function(value)
         State.autoAssignTeamsEnabled = value
-        if value then refreshAutoAssignedTeams() end
+        if value then
+            refreshAutoAssignedTeams()
+        end
         updateTeamPage()
     end
 )
 
-local reductionSection = makeSection(TeamsPage, "EGG REDUCTION", 63, 72)
-local reductionLabel = Instance.new("TextLabel")
-reductionLabel.BackgroundTransparency = 1
-reductionLabel.Position = UDim2.fromOffset(8, 19)
-reductionLabel.Size = UDim2.new(1, -16, 0, 25)
-reductionLabel.Font = Enum.Font.Gotham
-reductionLabel.Text = "Birb • Rainbow Birb • Mimic Octopus"
-reductionLabel.TextColor3 = Color3.fromRGB(205, 199, 215)
-reductionLabel.TextSize = 8
-reductionLabel.TextWrapped = true
-reductionLabel.TextXAlignment = Enum.TextXAlignment.Left
-reductionLabel.Parent = reductionSection
+local teamColumns = Instance.new("Frame")
+teamColumns.BackgroundTransparency = 1
+teamColumns.Position = UDim2.fromOffset(0, 48)
+teamColumns.Size = UDim2.new(1, 0, 0, 318)
+teamColumns.Parent = TeamsPage
+
+local reductionFrame = makeSection(teamColumns, "EGG REDUCTION", 0, 318)
+reductionFrame.Size = UDim2.new(0.5, -3, 1, 0)
+
+local reductionDescription = Instance.new("TextLabel")
+reductionDescription.BackgroundTransparency = 1
+reductionDescription.Position = UDim2.fromOffset(8, 22)
+reductionDescription.Size = UDim2.new(1, -16, 0, 16)
+reductionDescription.Font = Enum.Font.Gotham
+reductionDescription.Text = "Birb • Rainbow Birb • Mimic Octopus"
+reductionDescription.TextColor3 = Color3.fromRGB(150, 142, 165)
+reductionDescription.TextSize = 7
+reductionDescription.TextXAlignment = Enum.TextXAlignment.Left
+reductionDescription.Parent = reductionFrame
 
 local reductionSelect = Instance.new("TextButton")
-reductionSelect.Size = UDim2.new(0.5, -10, 0, 22)
-reductionSelect.Position = UDim2.new(0, 8, 1, -28)
+reductionSelect.Size = UDim2.new(0.62, -10, 0, 22)
+reductionSelect.Position = UDim2.fromOffset(8, 42)
 reductionSelect.BackgroundColor3 = Color3.fromRGB(38, 30, 48)
 reductionSelect.BorderSizePixel = 0
 reductionSelect.Font = Enum.Font.GothamSemibold
-reductionSelect.Text = "Select All Detected Pets"
+reductionSelect.Text = "Select All Detected"
 reductionSelect.TextColor3 = Color3.fromRGB(225, 220, 235)
-reductionSelect.TextSize = 8
-reductionSelect.Parent = reductionSection
+reductionSelect.TextSize = 7
+reductionSelect.Parent = reductionFrame
 Instance.new("UICorner", reductionSelect).CornerRadius = UDim.new(0, 6)
 
-local reductionEquip = reductionSelect:Clone()
-reductionEquip.Position = UDim2.new(0.5, 2, 1, -28)
+local reductionEquip = Instance.new("TextButton")
+reductionEquip.Size = UDim2.new(0.38, -10, 0, 22)
+reductionEquip.Position = UDim2.new(0.62, 2, 0, 42)
+reductionEquip.BackgroundColor3 = Color3.fromRGB(38, 30, 48)
+reductionEquip.BorderSizePixel = 0
+reductionEquip.Font = Enum.Font.GothamSemibold
 reductionEquip.Text = "Equip"
-reductionEquip.Parent = reductionSection
+reductionEquip.TextColor3 = Color3.fromRGB(225, 220, 235)
+reductionEquip.TextSize = 7
+reductionEquip.Parent = reductionFrame
+Instance.new("UICorner", reductionEquip).CornerRadius = UDim.new(0, 6)
 
-local koiSection = makeSection(TeamsPage, "KOI / RUBY", 140, 72)
-local koiLabel = Instance.new("TextLabel")
-koiLabel.BackgroundTransparency = 1
-koiLabel.Position = UDim2.fromOffset(8, 19)
-koiLabel.Size = UDim2.new(1, -16, 0, 25)
-koiLabel.Font = Enum.Font.Gotham
-koiLabel.Text = "1× Koi • Ruby Squid fills remaining slots"
-koiLabel.TextColor3 = Color3.fromRGB(205, 199, 215)
-koiLabel.TextSize = 8
-koiLabel.TextWrapped = true
-koiLabel.TextXAlignment = Enum.TextXAlignment.Left
-koiLabel.Parent = koiSection
+local reductionLiveTitle = Instance.new("TextLabel")
+reductionLiveTitle.BackgroundTransparency = 1
+reductionLiveTitle.Position = UDim2.fromOffset(8, 70)
+reductionLiveTitle.Size = UDim2.new(1, -16, 0, 16)
+reductionLiveTitle.Font = Enum.Font.GothamBold
+reductionLiveTitle.Text = "LIVE SELECTED 0/8"
+reductionLiveTitle.TextColor3 = Color3.fromRGB(177, 136, 255)
+reductionLiveTitle.TextSize = 7
+reductionLiveTitle.TextXAlignment = Enum.TextXAlignment.Left
+reductionLiveTitle.Parent = reductionFrame
+
+local reductionRows = {}
+for i = 1, CONFIG.TEAM_SLOTS do
+    local row = Instance.new("TextLabel")
+    row.BackgroundTransparency = 1
+    row.Position = UDim2.fromOffset(8, 91 + ((i - 1) * 25))
+    row.Size = UDim2.new(1, -16, 0, 23)
+    row.Font = Enum.Font.GothamMedium
+    row.Text = string.format("%d. Empty", i)
+    row.TextColor3 = Color3.fromRGB(190, 183, 205)
+    row.TextSize = 7
+    row.TextXAlignment = Enum.TextXAlignment.Left
+    row.TextYAlignment = Enum.TextYAlignment.Center
+    row.TextTruncate = Enum.TextTruncate.AtEnd
+    row.Parent = reductionFrame
+    reductionRows[i] = row
+end
+
+local koiFrame = makeSection(teamColumns, "KOI / RUBY", 0, 318)
+koiFrame.Position = UDim2.new(0.5, 3, 0, 0)
+koiFrame.Size = UDim2.new(0.5, -3, 1, 0)
+
+local koiDescription = Instance.new("TextLabel")
+koiDescription.BackgroundTransparency = 1
+koiDescription.Position = UDim2.fromOffset(8, 22)
+koiDescription.Size = UDim2.new(1, -16, 0, 16)
+koiDescription.Font = Enum.Font.Gotham
+koiDescription.Text = "1× Koi • Ruby Squid fills remaining slots"
+koiDescription.TextColor3 = Color3.fromRGB(150, 142, 165)
+koiDescription.TextSize = 7
+koiDescription.TextXAlignment = Enum.TextXAlignment.Left
+koiDescription.Parent = koiFrame
 
 local koiSelect = Instance.new("TextButton")
-koiSelect.Size = UDim2.new(0.5, -10, 0, 22)
-koiSelect.Position = UDim2.new(0, 8, 1, -28)
+koiSelect.Size = UDim2.new(0.62, -10, 0, 22)
+koiSelect.Position = UDim2.fromOffset(8, 42)
 koiSelect.BackgroundColor3 = Color3.fromRGB(38, 30, 48)
 koiSelect.BorderSizePixel = 0
 koiSelect.Font = Enum.Font.GothamSemibold
-koiSelect.Text = "Select All Detected Pets"
+koiSelect.Text = "Select All Detected"
 koiSelect.TextColor3 = Color3.fromRGB(225, 220, 235)
-koiSelect.TextSize = 8
-koiSelect.Parent = koiSection
+koiSelect.TextSize = 7
+koiSelect.Parent = koiFrame
 Instance.new("UICorner", koiSelect).CornerRadius = UDim.new(0, 6)
 
-local koiEquip = koiSelect:Clone()
-koiEquip.Position = UDim2.new(0.5, 2, 1, -28)
+local koiEquip = Instance.new("TextButton")
+koiEquip.Size = UDim2.new(0.38, -10, 0, 22)
+koiEquip.Position = UDim2.new(0.62, 2, 0, 42)
+koiEquip.BackgroundColor3 = Color3.fromRGB(38, 30, 48)
+koiEquip.BorderSizePixel = 0
+koiEquip.Font = Enum.Font.GothamSemibold
 koiEquip.Text = "Equip"
-koiEquip.Parent = koiSection
+koiEquip.TextColor3 = Color3.fromRGB(225, 220, 235)
+koiEquip.TextSize = 7
+koiEquip.Parent = koiFrame
+Instance.new("UICorner", koiEquip).CornerRadius = UDim.new(0, 6)
 
-local teamStatus = makeSection(TeamsPage, "LIVE TEAM", 217, 49)
+local koiLiveTitle = Instance.new("TextLabel")
+koiLiveTitle.BackgroundTransparency = 1
+koiLiveTitle.Position = UDim2.fromOffset(8, 70)
+koiLiveTitle.Size = UDim2.new(1, -16, 0, 16)
+koiLiveTitle.Font = Enum.Font.GothamBold
+koiLiveTitle.Text = "LIVE SELECTED 0/8"
+koiLiveTitle.TextColor3 = Color3.fromRGB(177, 136, 255)
+koiLiveTitle.TextSize = 7
+koiLiveTitle.TextXAlignment = Enum.TextXAlignment.Left
+koiLiveTitle.Parent = koiFrame
+
+local koiRows = {}
+for i = 1, CONFIG.TEAM_SLOTS do
+    local row = Instance.new("TextLabel")
+    row.BackgroundTransparency = 1
+    row.Position = UDim2.fromOffset(8, 91 + ((i - 1) * 25))
+    row.Size = UDim2.new(1, -16, 0, 23)
+    row.Font = Enum.Font.GothamMedium
+    row.Text = string.format("%d. Empty", i)
+    row.TextColor3 = Color3.fromRGB(190, 183, 205)
+    row.TextSize = 7
+    row.TextXAlignment = Enum.TextXAlignment.Left
+    row.TextYAlignment = Enum.TextYAlignment.Center
+    row.TextTruncate = Enum.TextTruncate.AtEnd
+    row.Parent = koiFrame
+    koiRows[i] = row
+end
+
+local teamStatus = makeSection(TeamsPage, "LIVE TEAM", 372, 42)
+
 local teamStatusLabel = Instance.new("TextLabel")
 teamStatusLabel.BackgroundTransparency = 1
 teamStatusLabel.Position = UDim2.fromOffset(8, 18)
-teamStatusLabel.Size = UDim2.new(1, -16, 0, 24)
+teamStatusLabel.Size = UDim2.new(1, -16, 0, 18)
 teamStatusLabel.Font = Enum.Font.GothamSemibold
 teamStatusLabel.Text = "Reduction 0/8 • Koi 0/8 • Active: None"
 teamStatusLabel.TextColor3 = Color3.fromRGB(205, 199, 215)
-teamStatusLabel.TextSize = 8
-teamStatusLabel.TextWrapped = true
+teamStatusLabel.TextSize = 7
 teamStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 teamStatusLabel.Parent = teamStatus
 
+local function getLiveSelectedTeam(team, fallbackBuilder)
+    if type(team) == "table" and #team > 0 then
+        return team
+    end
+
+    local ok, result = pcall(fallbackBuilder)
+    if ok and type(result) == "table" then
+        return result
+    end
+
+    return {}
+end
+
+local function updateCompactSelectedRows(rows, titleLabel, team, fallbackBuilder, data)
+    local inventory = getPetInventory(data)
+    local liveTeam = getLiveSelectedTeam(team, fallbackBuilder)
+
+    local shown = math.min(#liveTeam, CONFIG.TEAM_SLOTS)
+    titleLabel.Text = string.format("LIVE SELECTED %d/8", shown)
+
+    for i = 1, CONFIG.TEAM_SLOTS do
+        local uuid = liveTeam[i]
+        local row = rows[i]
+
+        if not uuid then
+            row.Text = string.format("%d. Empty", i)
+            row.TextColor3 = Color3.fromRGB(120, 114, 135)
+        else
+            local entry = inventory and inventory[uuid]
+            local petData = entry and entry.PetData
+
+            if entry then
+                local petType = tostring(entry.PetType or "Unknown")
+                local level = tonumber(petData and petData.Level) or 0
+                local mutation = tostring(
+                    petData and (
+                        petData.MutationType
+                        or petData.Mutation
+                        or petData.mutation
+                        or ""
+                    )
+                    or ""
+                )
+
+                if mutation == "" then
+                    mutation = "Normal"
+                end
+
+                row.Text = string.format(
+                    "%d. %s • Lv.%d • %s",
+                    i,
+                    petType,
+                    level,
+                    mutation
+                )
+                row.TextColor3 = Color3.fromRGB(214, 209, 224)
+            else
+                row.Text = string.format("%d. Missing", i)
+                row.TextColor3 = Color3.fromRGB(255, 125, 125)
+            end
+        end
+    end
+end
+
 local function selectAllDetectedReductionPets()
     State.reductionTeam = buildReductionTeam()
-    State.lastStatus = string.format("✅ Reduction team: %d/8 detected.", #State.reductionTeam)
+    State.lastStatus = string.format("✅ Reduction selected: %d/8", #State.reductionTeam)
     updateTeamPage()
 end
 
 local function selectAllDetectedKoiPets()
     State.koiTeam = buildKoiTeam()
-    State.lastStatus = string.format("✅ Koi/Ruby team: %d/8 detected.", #State.koiTeam)
+    State.lastStatus = string.format("✅ Koi/Ruby selected: %d/8", #State.koiTeam)
     updateTeamPage()
 end
 
@@ -2515,18 +3206,22 @@ reductionEquip.Activated:Connect(function()
     refreshAutoAssignedTeams()
     if #State.reductionTeam > 0 then
         equipGardenTeam(State.reductionTeam, "Reduction")
+        State.lastStatus = "✅ Reduction team equipped."
     else
         State.lastStatus = "❌ No Birb/Rainbow Birb/Mimic Octopus detected."
     end
+    updateTeamPage()
 end)
 
 koiEquip.Activated:Connect(function()
     refreshAutoAssignedTeams()
     if #State.koiTeam > 0 then
         equipGardenTeam(State.koiTeam, "Koi")
+        State.lastStatus = "✅ Koi/Ruby team equipped."
     else
         State.lastStatus = "❌ No Koi/Ruby Squid detected."
     end
+    updateTeamPage()
 end)
 
 -- Settings page.
@@ -2595,9 +3290,22 @@ favToggle = makeGridToggle(settingsContent, halfWidth + gap, 160, halfWidth, "Au
     end
 end)
 
+local antiIdleToggle = makeGridToggle(
+    settingsContent, 0, 192, halfWidth,
+    "Anti Kick / Idle", true,
+    function(value)
+        State.antiIdleEnabled = value
+        State.antiKickEnabled = value
+
+        if getgenv and getgenv().__FABLE_V6_ANTIKICK_CONTROLLER then
+            getgenv().__FABLE_V6_ANTIKICK_CONTROLLER.enabled = value
+        end
+    end
+)
+
 local targetInfo = Instance.new("TextLabel")
 targetInfo.BackgroundTransparency = 1
-targetInfo.Position = UDim2.fromOffset(4, 194)
+targetInfo.Position = UDim2.fromOffset(4, 226)
 targetInfo.Size = UDim2.new(1, -8, 0, 28)
 targetInfo.Font = Enum.Font.Gotham
 targetInfo.Text = "🎁 Gift: mysto_sailor   •   🎟️ Ticket: arimabns"
@@ -2608,7 +3316,7 @@ targetInfo.Parent = settingsContent
 
 local capacityInfo = Instance.new("TextLabel")
 capacityInfo.BackgroundTransparency = 1
-capacityInfo.Position = UDim2.fromOffset(4, 220)
+capacityInfo.Position = UDim2.fromOffset(4, 252)
 capacityInfo.Size = UDim2.new(1, -8, 0, 28)
 capacityInfo.Font = Enum.Font.Gotham
 capacityInfo.Text = "Teams: 8 slots each • Night Egg only • No pet selling"
@@ -2622,14 +3330,37 @@ local function showPage(name)
         page.Visible = pageName == name
     end
 
+    local meta = TabMeta[name]
+    if meta then
+        Title.Text = meta[2]
+        Subtitle.Text =
+            name == "Status Board" and "Live Fable status feed"
+            or name == "Transfer" and "Egg transfer automation"
+            or name == "Pet Teams" and "Automatic pet team assignment"
+            or "Fable transfer settings"
+    end
+
     for tabName, button in pairs(TabButtons) do
         local active = tabName == name
+
         button.BackgroundColor3 = active
-            and Color3.fromRGB(76, 44, 99)
-            or Color3.fromRGB(35, 30, 44)
-        button.TextColor3 = active
-            and Color3.fromRGB(238, 224, 255)
-            or Color3.fromRGB(165, 155, 180)
+            and Color3.fromRGB(48, 31, 62)
+            or Color3.fromRGB(15, 13, 22)
+
+        local icon = button:FindFirstChild("Icon")
+        local label = button:FindFirstChild("Label")
+
+        if icon then
+            icon.TextColor3 = active
+                and Color3.fromRGB(178, 105, 248)
+                or Color3.fromRGB(105, 96, 120)
+        end
+
+        if label then
+            label.TextColor3 = active
+                and Color3.fromRGB(238, 224, 255)
+                or Color3.fromRGB(145, 136, 160)
+        end
     end
 end
 
@@ -2683,8 +3414,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V5_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V5_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V9_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V9_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -2700,15 +3431,51 @@ local function petNameFromUUID(uuid)
     return "Missing"
 end
 
-function updateTeamPage()
+updateTeamPage = function()
+    if State.autoAssignTeamsEnabled then
+        pcall(refreshAutoAssignedTeams)
+    end
+
+    local data = getData()
+
+    local reductionLive = getLiveSelectedTeam(
+        State.reductionTeam,
+        buildReductionTeam,
+        data
+    )
+
+    local koiLive = getLiveSelectedTeam(
+        State.koiTeam,
+        buildKoiTeam,
+        data
+    )
+
     teamStatusLabel.Text = string.format(
         "Reduction %d/8 • Koi %d/8 • Active: %s",
-        math.min(#State.reductionTeam, CONFIG.TEAM_SLOTS),
-        math.min(#State.koiTeam, CONFIG.TEAM_SLOTS),
+        math.min(#reductionLive, CONFIG.TEAM_SLOTS),
+        math.min(#koiLive, CONFIG.TEAM_SLOTS),
         State.currentGardenTeamName or "None"
     )
 
-    transferTeamLabel[2].Text = State.currentGardenTeamName or "None"
+    updateCompactSelectedRows(
+        reductionRows,
+        reductionLiveTitle,
+        reductionLive,
+        buildReductionTeam,
+        data
+    )
+
+    updateCompactSelectedRows(
+        koiRows,
+        koiLiveTitle,
+        koiLive,
+        buildKoiTeam,
+        data
+    )
+
+    if transferTeamLabel and State.currentGardenTeamName then
+        transferTeamLabel[2].Text = State.currentGardenTeamName
+    end
 end
 
 local function updateUI()
@@ -2731,11 +3498,25 @@ local function updateUI()
     transferTeamLabel[2].Text = State.currentGardenTeamName or "None"
 
     local currentData = getData()
-            updateTeamPage()
+    updateTeamPage()
+    pcall(updateStatusBoard)
 end
 
-showPage("Transfer")
+showPage("Status Board")
 updateUI()
+
+Threads.teamLiveUI = task.spawn(function()
+    while not State.shuttingDown do
+        task.wait(0.25)
+
+        if ScreenGui
+            and ScreenGui.Parent
+            and Main.Visible
+        then
+            pcall(updateTeamPage)
+        end
+    end
+end)
 
 ---------------------------------------------------------------------
 -- SHUTDOWN / CLEANUP
@@ -2744,6 +3525,12 @@ updateUI()
 local function cleanup()
     State.shuttingDown = true
     State.enabled = false
+    State.antiIdleEnabled = false
+    State.antiKickEnabled = false
+
+    if getgenv and getgenv().__FABLE_V6_ANTIKICK_CONTROLLER then
+        getgenv().__FABLE_V6_ANTIKICK_CONTROLLER.enabled = false
+    end
 
     for _, thread in pairs(Threads) do
         if thread then
@@ -2770,6 +3557,12 @@ local function cleanup()
     State.cooldownPets = {}
     State.activePetsCacheUI = {}
 
+    if FloatingToggle and FloatingToggle.Parent then
+        pcall(function()
+            FloatingToggle:Destroy()
+        end)
+    end
+
     if ScreenGui and ScreenGui.Parent then
         pcall(function()
             ScreenGui:Destroy()
@@ -2777,13 +3570,13 @@ local function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V5 = nil
+        getgenv().FABLE_TRANSFER_V9 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V5_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V9_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -2954,5 +3747,6 @@ end)
 
 pcall(refreshAutoAssignedTeams)
 State.lastStatus = "Auto Hatch is OFF."
+statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V5] Loaded — Auto Hatch OFF. V52 hatch/UI/trade mechanics copied; Rapid Gift locked to mysto_sailor; no pet selling.")
+print("[FABLE TRANSFER V9] Loaded — Auto Hatch OFF. V52 status board/UI/trade mechanics copied; anti-idle enabled; Rapid Gift locked to mysto_sailor; no pet selling.")
