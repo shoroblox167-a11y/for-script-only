@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V22
+    FABLE TRANSFER V24
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -58,7 +58,7 @@
 -- while a pet is temporarily absent, so the same team catches up when it
 -- returns to the inventory.
 TransferHttpService = game:GetService("HttpService")
-TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V22_STATE.json"
+TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V24_STATE.json"
 PersistentTransferConfig = {
     enabled = false,
     autoGiftEnabled = true,
@@ -76,6 +76,7 @@ function transferLoadPersistentState()
 
     if not isfile(configFileToRead) then
         for _, legacyFile in ipairs({
+            "FABLE_TRANSFER_V22_STATE.json",
             "FABLE_TRANSFER_V21_STATE.json",
             "FABLE_TRANSFER_V20_STATE.json",
             "FABLE_TRANSFER_V19_STATE.json",
@@ -157,7 +158,7 @@ function transferSavePersistentState()
     end
 
     local payload = {
-        version = 22,
+        version = 23,
         enabled = enabled == true,
         autoGiftEnabled = autoGiftEnabled == true,
         autoPetSlotEnabled = autoPetSlotEnabled == true,
@@ -193,6 +194,7 @@ transferLoadPersistentState()
 
 if getgenv then
     local previousStops = {
+        getgenv().FABLE_TRANSFER_V24_STOP,
         getgenv().FABLE_TRANSFER_V22_STOP,
         getgenv().FABLE_TRANSFER_V19_STOP,
         getgenv().FABLE_TRANSFER_V18_STOP,
@@ -208,13 +210,15 @@ if getgenv then
         end
     end
 
+    getgenv().FABLE_TRANSFER_V24 = nil
+    getgenv().FABLE_TRANSFER_V24_STOP = nil
     getgenv().FABLE_TRANSFER_V22 = nil
     getgenv().FABLE_TRANSFER_V22_STOP = nil
     getgenv().FABLE_TRANSFER_V19 = nil
     getgenv().FABLE_TRANSFER_V19_STOP = nil
     getgenv().FABLE_TRANSFER_V18 = nil
     getgenv().FABLE_TRANSFER_V18_STOP = nil
-    getgenv().FABLE_TRANSFER_V22 = true
+    getgenv().FABLE_TRANSFER_V24 = true
 end
 
 if not game:IsLoaded() then
@@ -230,15 +234,15 @@ VirtualUser = game:GetService("VirtualUser")
 
 LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
-    warn("[FABLE TRANSFER V22] LocalPlayer is not available.")
-    if getgenv then getgenv().FABLE_TRANSFER_V22 = nil end
+    warn("[FABLE TRANSFER V24] LocalPlayer is not available.")
+    if getgenv then getgenv().FABLE_TRANSFER_V24 = nil end
     return
 end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V22] Unsupported game: " .. tostring(game.GameId))
-    if getgenv then getgenv().FABLE_TRANSFER_V22 = nil end
+    warn("[FABLE TRANSFER V24] Unsupported game: " .. tostring(game.GameId))
+    if getgenv then getgenv().FABLE_TRANSFER_V24 = nil end
     return
 end
 
@@ -270,8 +274,8 @@ okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V22] Failed to require DataService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V22 = nil end
+    warn("[FABLE TRANSFER V24] Failed to require DataService.")
+    if getgenv then getgenv().FABLE_TRANSFER_V24 = nil end
     return
 end
 
@@ -279,8 +283,8 @@ okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V22] Failed to require PetGiftingService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V22 = nil end
+    warn("[FABLE TRANSFER V24] Failed to require PetGiftingService.")
+    if getgenv then getgenv().FABLE_TRANSFER_V24 = nil end
     return
 end
 
@@ -714,11 +718,26 @@ function getReadyNightEggs()
     return result
 end
 
+function isEggTool(tool)
+    if not tool or not tool:IsA("Tool") then
+        return false
+    end
+
+    local b = tool:GetAttribute("b")
+    local h = tool:GetAttribute("h")
+
+    -- Matches the supplied V52 GetEggUsingName logic:
+    -- only reject a tool when b exists and is not "c".
+    return (b == nil or b == "c") and h ~= nil
+end
+
 function getNightEggTool()
     local character = State.character
     if character then
         local equipped = character:FindFirstChildOfClass("Tool")
-        if equipped and equipped:GetAttribute("h") == CONFIG.DEFAULT_EGG then
+        if isEggTool(equipped)
+            and equipped:GetAttribute("h") == CONFIG.DEFAULT_EGG
+        then
             return equipped
         end
     end
@@ -726,7 +745,9 @@ function getNightEggTool()
     local backpack = State.backpack
     if backpack then
         for _, tool in ipairs(backpack:GetChildren()) do
-            if tool:IsA("Tool") and tool:GetAttribute("h") == CONFIG.DEFAULT_EGG then
+            if isEggTool(tool)
+                and tool:GetAttribute("h") == CONFIG.DEFAULT_EGG
+            then
                 return tool
             end
         end
@@ -740,6 +761,23 @@ function getEggToolUses(tool)
         return 0
     end
     return tonumber(tool:GetAttribute("e")) or 0
+end
+
+function isToolHeld(tool)
+    local character = State.character
+    if not character or not tool then
+        return false
+    end
+
+    for _, child in ipairs(character:GetChildren()) do
+        if child:IsA("Tool") then
+            if child == tool or string.find(child.Name, tool.Name, 1, true) then
+                return true
+            end
+        end
+    end
+
+    return false
 end
 
 function getTakenEggPositions()
@@ -902,6 +940,138 @@ function buildKoiTeam()
 end
 
 ---------------------------------------------------------------------
+-- PERSISTED TEAM RECONCILER
+-- V23 called refreshAutoAssignedTeams(), but the function was missing.
+-- That is the exact nil-call shown by the user's console at line 3513.
+--
+-- Saved UUIDs stay authoritative. Auto-assign only fills free slots.
+---------------------------------------------------------------------
+function refreshAutoAssignedTeams()
+    local data = getData()
+    if not data then
+        return false
+    end
+
+    if type(State.reductionTeam) ~= "table" then
+        State.reductionTeam = {}
+    end
+    if type(State.koiTeam) ~= "table" then
+        State.koiTeam = {}
+    end
+
+    local maxPets = getTeamSlotCapacity(data)
+    if maxPets <= 0 then
+        maxPets = CONFIG.TEAM_SLOTS
+    end
+
+    local changed = false
+
+    local function normalize(team)
+        local result = {}
+        local seen = {}
+
+        for _, rawUUID in ipairs(team) do
+            local uuid = tostring(rawUUID)
+            if uuid ~= "" and not seen[uuid] then
+                seen[uuid] = true
+                table.insert(result, uuid)
+            else
+                changed = true
+            end
+        end
+
+        return result
+    end
+
+    State.reductionTeam = normalize(State.reductionTeam)
+    State.koiTeam = normalize(State.koiTeam)
+
+    -- A UUID can belong to only one transfer team.
+    local reductionSet = {}
+    for _, uuid in ipairs(State.reductionTeam) do
+        reductionSet[uuid] = true
+    end
+
+    local filteredKoi = {}
+    local koiSeen = {}
+    for _, uuid in ipairs(State.koiTeam) do
+        if not reductionSet[uuid] and not koiSeen[uuid] then
+            koiSeen[uuid] = true
+            table.insert(filteredKoi, uuid)
+        else
+            changed = true
+        end
+    end
+    State.koiTeam = filteredKoi
+
+    if State.autoAssignTeamsEnabled then
+        local inventory = getPetInventory(data)
+        local used = {}
+
+        for _, uuid in ipairs(State.reductionTeam) do
+            used[uuid] = true
+        end
+        for _, uuid in ipairs(State.koiTeam) do
+            used[uuid] = true
+        end
+
+        local function append(team, allowed)
+            if #team >= maxPets then
+                return
+            end
+
+            local candidates = collectUUIDsByPetNames(inventory, allowed)
+
+            for _, match in ipairs(candidates) do
+                if #team >= maxPets then
+                    break
+                end
+
+                local uuid = tostring(match.uuid)
+                if uuid ~= "" and not used[uuid] then
+                    used[uuid] = true
+                    table.insert(team, uuid)
+                    changed = true
+                end
+            end
+        end
+
+        append(State.reductionTeam, {
+            ["Birb"] = true,
+            ["Rainbow Birb"] = true,
+            ["Mimic Octopus"] = true,
+        })
+
+        -- Preserve the requested Koi pattern: one Koi first, then Ruby Squid.
+        if #State.koiTeam == 0 then
+            local koiCandidates = collectUUIDsByPetNames(inventory, {
+                ["Koi"] = true,
+            })
+
+            for _, match in ipairs(koiCandidates) do
+                local uuid = tostring(match.uuid)
+                if uuid ~= "" and not used[uuid] then
+                    used[uuid] = true
+                    table.insert(State.koiTeam, uuid)
+                    changed = true
+                    break
+                end
+            end
+        end
+
+        append(State.koiTeam, {
+            ["Ruby Squid"] = true,
+        })
+    end
+
+    if changed then
+        pcall(transferSavePersistentState)
+    end
+
+    return changed
+end
+
+---------------------------------------------------------------------
 -- V52 FAVORITE HELPER
 ---------------------------------------------------------------------
 
@@ -1055,7 +1225,7 @@ function unequipAllGardenPets()
         task.wait(0.2)
     end
 
-    warn("[FABLE TRANSFER V22] Timeout removing existing garden pets.")
+    warn("[FABLE TRANSFER V24] Timeout removing existing garden pets.")
     return false
 end
 
@@ -1199,7 +1369,7 @@ function equipGardenTeam(team, teamName)
 
         State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
-        warn("[FABLE TRANSFER V22] Timeout equipping " .. tostring(teamName) .. " team.")
+        warn("[FABLE TRANSFER V24] Timeout equipping " .. tostring(teamName) .. " team.")
         return false
     end
 
@@ -1207,7 +1377,7 @@ function equipGardenTeam(team, teamName)
     State.teamEquipBusy = false
 
     if not ok then
-        warn("[FABLE TRANSFER V22] Team equip error:", result)
+        warn("[FABLE TRANSFER V24] Team equip error:", result)
         State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
         return false
@@ -1465,13 +1635,20 @@ function placeNightEggsToMax()
             end
         end
 
-        if not getEquippedTool() or getEquippedTool() ~= tool then
+        if not isToolHeld(tool) then
             unequipTools()
             task.wait(0.2)
             if not equipTool(tool) then
-                State.lastStatus = "🔴 Failed to equip Night Egg."
-                break
+                State.lastStatus = "⏳ Retrying Night Egg equip..."
+                task.wait(0.2)
+                continue
             end
+        end
+
+        if not isToolHeld(tool) then
+            State.lastStatus = "🔴 Night Egg tool is not held."
+            task.wait(0.1)
+            continue
         end
 
         local placePos = table.remove(availablePositions, 1)
@@ -1497,9 +1674,8 @@ function placeNightEggsToMax()
             break
         end
 
-        placedAny = true
-
         -- V52 waits for the live farm count to actually increment.
+        -- Do not count a request as a placed egg until that happens.
         local waitAmount = os.clock()
 
         while true do
@@ -1516,6 +1692,7 @@ function placeNightEggsToMax()
             local endEggCount = getFarmEggCount()
 
             if endEggCount > startEggCount then
+                placedAny = true
                 if endEggCount >= userMaxEggs then
                     State.lastStatus = "✅ Farm is full."
                 end
@@ -1727,7 +1904,7 @@ function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V22] Gift error:", err)
+        warn("[FABLE TRANSFER V24] Gift error:", err)
     end
 
     State.autoGiftBusy = false
@@ -2676,7 +2853,12 @@ end
 
 uiParent = getUIParent()
 
-oldUI = uiParent:FindFirstChild("FableTransferV22")
+local staleV22UI = uiParent:FindFirstChild("FableTransferV22")
+if staleV22UI then
+    pcall(function() staleV22UI:Destroy() end)
+end
+
+oldUI = uiParent:FindFirstChild("FableTransferV24")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
@@ -2686,7 +2868,7 @@ end
 ScreenGui = nil
 okGui, guiErr = pcall(function()
     ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "FableTransferV22"
+    ScreenGui.Name = "FableTransferV24"
     ScreenGui.ResetOnSpawn = false
     ScreenGui.IgnoreGuiInset = true
     ScreenGui.DisplayOrder = 9999
@@ -2695,12 +2877,12 @@ okGui, guiErr = pcall(function()
 end)
 
 if not okGui or not ScreenGui then
-    warn("[FABLE TRANSFER V22] GUI creation failed: " .. tostring(guiErr))
-    if getgenv then getgenv().FABLE_TRANSFER_V22 = nil end
+    warn("[FABLE TRANSFER V24] GUI creation failed: " .. tostring(guiErr))
+    if getgenv then getgenv().FABLE_TRANSFER_V24 = nil end
     return
 end
 
-print("[FABLE TRANSFER V22] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
+print("[FABLE TRANSFER V24] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
 
 Main = Instance.new("Frame")
 Main.Name = "Main"
@@ -3036,7 +3218,10 @@ function makeLine(parent, y, leftText, rightText)
     right.TextXAlignment = Enum.TextXAlignment.Right
     right.Parent = parent
 
-    return left, right
+    return {
+        [1] = left,
+        [2] = right,
+    }
 end
 
 function makeToggle(parent, y, labelText, defaultValue, callback)
@@ -3410,7 +3595,7 @@ statusPush("Fable Status initialized")
 
 if State.enabled then
     State.hatchingSystemRunning = true
-    State.lastStatus = "Reconnected • Auto Hatch running immediately."
+    State.lastStatus = "Reconnected • preparing hatch team..."
 else
     State.hatchingSystemRunning = false
 end
@@ -3475,7 +3660,10 @@ function prepareInitialHatchTeam()
                 end
 
                 if success then
-                    break
+                    local targetTeam = #ready > 0 and State.koiTeam or State.reductionTeam
+                    if isRequestedTeamActuallyEquipped(targetTeam) then
+                        break
+                    end
                 end
             end
 
@@ -3503,11 +3691,12 @@ Varz.StartHatchingSystem = function()
     pcall(transferSavePersistentState)
     v20StatusNow()
 
-    -- Equip the correct phase team immediately. The cycle itself continues
-    -- only after this short preflight has finished or timed out.
-    prepareInitialHatchTeam()
+    -- Start the continuous hatch system immediately.
+    -- Team preparation is deferred; the main cycle also verifies/retries
+    -- the correct team before progressing.
+    task.defer(prepareInitialHatchTeam)
 
-    print("[FABLE TRANSFER V22] Auto Hatch enabled.")
+    print("[FABLE TRANSFER V24] Auto Hatch enabled.")
     return true
 end
 
@@ -3522,8 +3711,15 @@ Varz.StopHatchingSystem = function()
     pcall(transferSavePersistentState)
     v20StatusNow()
 
-    print("[FABLE TRANSFER V22] Auto Hatch stopped.")
+    print("[FABLE TRANSFER V24] Auto Hatch stopped.")
     return true
+end
+
+-- Persistent Auto Hatch must use the same start/preflight path as the UI toggle.
+if State.enabled then
+    task.defer(function()
+        prepareInitialHatchTeam()
+    end)
 end
 
 transferSection = makeSection(TransferPage, "TRANSFER", 0, 185)
@@ -4058,8 +4254,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V22_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V22_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V24_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V24_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -4142,7 +4338,7 @@ function updateUI()
     transferTeamLabel[2].Text = State.currentGardenTeamName or "None"
 
     local currentData = getData()
-    updateTeamPage()
+    pcall(updateTeamPage)
     pcall(updateStatusBoard)
 end
 
@@ -4216,13 +4412,13 @@ function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V22 = nil
+        getgenv().FABLE_TRANSFER_V24 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V22_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V24_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -4508,4 +4704,4 @@ else
 end
 statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V22] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
+print("[FABLE TRANSFER V24] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
