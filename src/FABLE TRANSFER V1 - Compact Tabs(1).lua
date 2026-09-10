@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V1
+    FABLE TRANSFER V3
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -36,12 +36,12 @@
       Farm.Important.Objects_Physical / PetEgg attributes
 ]]
 
-if getgenv and getgenv().FABLE_TRANSFER_V1 then
-    warn("[FABLE TRANSFER V1] Already loaded.")
+if getgenv and getgenv().FABLE_TRANSFER_V3 then
+    warn("[FABLE TRANSFER V3] Already loaded.")
     return
 end
 if getgenv then
-    getgenv().FABLE_TRANSFER_V1 = true
+    getgenv().FABLE_TRANSFER_V3 = true
 end
 
 if not game:IsLoaded() then
@@ -61,7 +61,7 @@ end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V1] Unsupported game.")
+    warn("[FABLE TRANSFER V3] Unsupported game.")
     return
 end
 
@@ -79,7 +79,7 @@ local okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V1] Failed to require DataService.")
+    warn("[FABLE TRANSFER V3] Failed to require DataService.")
     return
 end
 
@@ -87,7 +87,7 @@ local okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V1] Failed to require PetGiftingService.")
+    warn("[FABLE TRANSFER V3] Failed to require PetGiftingService.")
     return
 end
 
@@ -110,6 +110,9 @@ local CONFIG = {
     ULTRA = true,
 
     -- Team definitions.
+    -- Both transfer teams are built to a maximum of 8 pets.
+    TEAM_SLOTS = 8,
+
     REDUCTION_PETS = {
         "Birb",
         "Rainbow Birb",
@@ -156,10 +159,19 @@ local State = {
     enabled = false,
     shuttingDown = false,
 
-    -- V1 UI-connected controls.
+    -- V2 UI-connected controls.
     autoGiftEnabled = true,
     autoPetSlotEnabled = true,
     tradePetTeamsEnabled = true,
+
+    -- V52-derived display toggles, kept independent from transfer logic.
+    playerStatsEnabled = true,
+    activePetsUIEnabled = true,
+
+    playerStatsGui = nil,
+    playerStatsLabels = {},
+    activePetsGui = nil,
+    activePetsLabel = nil,
 
     character = LocalPlayer.Character,
     humanoid = nil,
@@ -508,85 +520,97 @@ end
 -- PET TEAM HELPERS
 ---------------------------------------------------------------------
 
-local function chooseOnePetUUIDByName(inventory, petName)
-    local selectedUUID = nil
-    local selectedLevel = nil
+local function getTeamSlotCapacity(data)
+    local accountMax = getMaxEquippedPets(data)
+    if accountMax > 0 then
+        return math.min(CONFIG.TEAM_SLOTS, accountMax)
+    end
+    return CONFIG.TEAM_SLOTS
+end
 
-    for uuid, entry in pairs(inventory) do
+local function collectUUIDsByPetNames(inventory, allowedNames)
+    local matches = {}
+
+    for uuid, entry in pairs(inventory or {}) do
         local petType = entry and entry.PetType
         local petData = entry and entry.PetData
 
-        if petType == petName and petData then
-            local level = tonumber(petData.Level) or 0
-
-            -- Deterministic choice. We prefer the lowest level only for the
-            -- helper's single-pet selections; Auto Pet Slot has its own exact
-            -- lowest-qualifying rule below.
-            if not selectedLevel or level < selectedLevel then
-                selectedLevel = level
-                selectedUUID = uuid
-            end
+        if petType and allowedNames[petType] and petData then
+            table.insert(matches, {
+                uuid = uuid,
+                petType = petType,
+                level = tonumber(petData.Level) or 0,
+            })
         end
     end
 
-    return selectedUUID
+    -- Deterministic ordering only; every matching copy qualifies regardless
+    -- of level, mutation, or weight.
+    table.sort(matches, function(a, b)
+        if a.petType ~= b.petType then
+            return a.petType < b.petType
+        end
+        if a.level ~= b.level then
+            return a.level < b.level
+        end
+        return tostring(a.uuid) < tostring(b.uuid)
+    end)
+
+    return matches
 end
 
 local function buildReductionTeam()
-    local inventory = getPetInventory(getData())
-    local team = {}
-    local maxPets = getMaxEquippedPets(getData())
+    local data = getData()
+    local inventory = getPetInventory(data)
+    local maxPets = getTeamSlotCapacity(data)
 
-    if maxPets <= 0 then
-        maxPets = 5
+    local allowed = {}
+    for _, petName in ipairs(CONFIG.REDUCTION_PETS) do
+        allowed[petName] = true
     end
 
-    for _, petName in ipairs(CONFIG.REDUCTION_PETS) do
+    local matches = collectUUIDsByPetNames(inventory, allowed)
+    local team = {}
+
+    -- Fill all 8 available team slots with any inventory copies whose
+    -- names are Birb / Rainbow Birb / Mimic Octopus.
+    for _, match in ipairs(matches) do
         if #team >= maxPets then
             break
         end
-
-        local uuid = chooseOnePetUUIDByName(inventory, petName)
-        if uuid then
-            table.insert(team, uuid)
-        end
+        table.insert(team, match.uuid)
     end
 
     return team
 end
 
 local function buildKoiTeam()
-    local inventory = getPetInventory(getData())
-    local maxPets = getMaxEquippedPets(getData())
-    if maxPets <= 0 then
-        maxPets = 5
-    end
+    local data = getData()
+    local inventory = getPetInventory(data)
+    local maxPets = getTeamSlotCapacity(data)
+
+    local koiMatches = collectUUIDsByPetNames(inventory, {
+        ["Koi"] = true,
+    })
+
+    local rubyMatches = collectUUIDsByPetNames(inventory, {
+        ["Ruby Squid"] = true,
+    })
 
     local team = {}
-    local koiUUID
-    local rubyUUIDs = {}
 
-    for uuid, entry in pairs(inventory) do
-        local petType = entry and entry.PetType
-        if petType == "Koi" and not koiUUID then
-            koiUUID = uuid
-        elseif petType == "Ruby Squid" then
-            table.insert(rubyUUIDs, uuid)
-        end
+    -- Requested Koi pattern: one Koi first, then Ruby Squid fills the
+    -- remaining slots. If there is no Koi, Ruby Squid can still fill all
+    -- available slots.
+    if koiMatches[1] then
+        table.insert(team, koiMatches[1].uuid)
     end
 
-    -- Exact requested pattern: 1 Koi + Ruby Squid for the remaining slots.
-    if koiUUID then
-        table.insert(team, koiUUID)
-    end
-
-    table.sort(rubyUUIDs)
-
-    for _, uuid in ipairs(rubyUUIDs) do
+    for _, match in ipairs(rubyMatches) do
         if #team >= maxPets then
             break
         end
-        table.insert(team, uuid)
+        table.insert(team, match.uuid)
     end
 
     return team
@@ -619,9 +643,9 @@ local function equipGardenTeam(team, teamName)
     unequipAllGardenPets()
 
     local data = getData()
-    local maxPets = getMaxEquippedPets(data)
+    local maxPets = getTeamSlotCapacity(data)
     if maxPets <= 0 then
-        maxPets = #team
+        maxPets = math.min(CONFIG.TEAM_SLOTS, #team)
     end
 
     local count = 0
@@ -686,194 +710,340 @@ local function ensureKoiTeam()
 end
 
 ---------------------------------------------------------------------
--- FAST NIGHT EGG PLACEMENT
----------------------------------------------------------------------
+-- V52 AUTO-HATCH CORE (TRANSFER VERSION)
+-- The workflow below intentionally follows the V52 Auto Hatch sequencing.
+-- Pet selling is deliberately omitted.
+
+local function GetSafePing()
+    local minPing = 0.0001
+
+    local ok, result = pcall(function()
+        local rawPing = (LocalPlayer and LocalPlayer:GetNetworkPing()) or 0
+        return math.clamp(rawPing, minPing, 7)
+    end)
+
+    return ok and result or minPing
+end
+
+local function GetFastHatchMode()
+    -- Transfer's "Overdrive" switch maps to V52's fast-hatch mode.
+    return CONFIG.OVERDRIVE == true
+end
+
+local function GetUltraMode()
+    return CONFIG.OVERDRIVE == true and CONFIG.ULTRA == true
+end
+
+local function getV52EggPositions(center, blockedList)
+    if CONFIG.MIDDLE_EGGS then
+        local positions = {}
+
+        local blockRadius = 4
+        local blockDistSq = blockRadius * blockRadius
+
+        local SQUARE_SIZE = 55
+        local GRASS_WIDTH = 14
+        local SPACING = 3
+
+        local halfOuter = SQUARE_SIZE / 2
+        local halfGrass = GRASS_WIDTH / 2
+
+        local function isBlocked(worldPos)
+            for _, blocked in ipairs(blockedList or {}) do
+                local dx = worldPos.X - blocked.X
+                local dz = worldPos.Z - blocked.Z
+
+                if (dx * dx + dz * dz) <= blockDistSq then
+                    return true
+                end
+            end
+
+            return false
+        end
+
+        for x = -halfOuter, halfOuter, SPACING do
+            for z = -halfOuter, halfOuter, SPACING do
+                if math.abs(x) > halfGrass then
+                    local worldPos = Vector3.new(center.X + x, center.Y, center.Z + z)
+
+                    if not isBlocked(worldPos) then
+                        table.insert(positions, worldPos)
+                    end
+                end
+            end
+        end
+
+        table.sort(positions, function(a, b)
+            local distA = (a - center).X ^ 2 + (a - center).Z ^ 2
+            local distB = (b - center).X ^ 2 + (b - center).Z ^ 2
+            return distA < distB
+        end)
+
+        return positions
+    end
+
+    -- Exact V52 non-middle position generation.
+    local positions = {}
+
+    local OUTER_WIDTH = 70
+    local OUTER_DEPTH = 50
+    local INNER_WIDTH = 14
+    local INNER_DEPTH = 60
+    local SPACING = 5
+
+    local halfOuterW = OUTER_WIDTH / 2
+    local halfOuterD = OUTER_DEPTH / 2
+    local halfInnerW = INNER_WIDTH / 2
+    local halfInnerD = INNER_DEPTH / 2
+
+    for x = center.X - halfOuterW, center.X + halfOuterW, SPACING do
+        for z = center.Z - halfOuterD, center.Z + halfOuterD, SPACING do
+            if math.abs(x - center.X) > halfInnerW
+                or math.abs(z - center.Z) > halfInnerD
+            then
+                table.insert(positions, Vector3.new(x, center.Y, z))
+            end
+        end
+    end
+
+    -- V52 shuffles the non-middle layout before placement.
+    math.randomseed(tick())
+    math.random()
+    math.random()
+
+    for i = #positions, 2, -1 do
+        local j = math.random(i)
+        positions[i], positions[j] = positions[j], positions[i]
+    end
+
+    return positions
+end
 
 local function placeNightEggsToMax()
     if not State.enabled or State.tradeBusy then
-        return
+        return false
     end
 
     if not State.objectsPhysical or not State.centerPart then
         if not refreshFarmRefs() then
-            return
+            return false
         end
     end
 
     local data = getData()
-    local maxEggs = CONFIG.MAX_EGG_TARGET
-    if maxEggs <= 0 then
-        maxEggs = getMaxEggCapacity(data)
+    local userMaxEggs = tonumber(CONFIG.MAX_EGG_TARGET) or 0
+
+    if userMaxEggs <= 0 then
+        userMaxEggs = getMaxEggCapacity(data)
     end
 
-    if maxEggs <= 0 then
-        return
+    if userMaxEggs <= 0 then
+        State.lastStatus = "Unable to read MaxEggsInFarm."
+        return false
     end
 
-    local current = getFarmEggCount()
-    local missing = math.max(0, maxEggs - current)
-    if missing <= 0 then
-        return
-    end
+    local farmEggCount = getFarmEggCount()
 
-    local eggTool = getNightEggTool()
-    if not eggTool then
-        State.lastStatus = "Waiting for Night Eggs..."
-        return
-    end
-
-    local uses = getEggToolUses(eggTool)
-    if uses <= 0 then
-        State.lastStatus = "Night Egg stock is empty."
-        return
-    end
-
-    local amountToPlace = math.min(missing, uses)
-    if amountToPlace <= 0 then
-        return
+    if farmEggCount >= userMaxEggs then
+        State.lastStatus = "✅ Farm is full."
+        return true
     end
 
     local center = State.centerPart.Position
-    local taken = getTakenEggPositions()
-    local positions
+    local availablePositions = getV52EggPositions(center, getTakenEggPositions())
 
-    if CONFIG.MIDDLE_EGGS then
-        positions = makeMiddleEggPositions(center, taken)
-    else
-        -- V1 compact-settings fallback: place across the full farm square
-        -- instead of preferring the middle-only layout.
-        positions = {}
-        local halfOuter = 55 / 2
-        local spacing = 3
+    local maxTime = os.clock()
+    local placedAny = false
 
-        local function blocked(worldPos)
-            for _, blockedPos in ipairs(taken) do
-                local dx = worldPos.X - blockedPos.X
-                local dz = worldPos.Z - blockedPos.Z
-                if (dx * dx + dz * dz) <= 16 then
-                    return true
-                end
-            end
-            return false
-        end
+    -- Exact V52-style outer loop: poll every 0.1s and stop after 10s.
+    while true do
+        task.wait(0.1 + GetSafePing())
 
-        for x = -halfOuter, halfOuter, spacing do
-            for z = -halfOuter, halfOuter, spacing do
-                local worldPos = Vector3.new(center.X + x, center.Y, center.Z + z)
-                if not blocked(worldPos) then
-                    table.insert(positions, worldPos)
-                end
-            end
-        end
-    end
-
-    if #positions == 0 then
-        State.lastStatus = "No valid egg positions."
-        return
-    end
-
-    unequipTools()
-    if not equipTool(eggTool) then
-        State.lastStatus = "Failed to equip Night Egg."
-        return
-    end
-
-    State.lastStatus = string.format("Placing Night Eggs %d/%d...", amountToPlace, maxEggs)
-
-    for i = 1, amountToPlace do
         if not State.enabled or State.tradeBusy then
             break
         end
 
-        local pos = positions[i]
-        if not pos then
+        if os.clock() - maxTime >= 10 then
             break
         end
 
-        -- Revalidate the equipped tool so another local UI action can't cause
-        -- a disabled/default egg to slip into CreateEgg.
-        local held = getEquippedTool()
-        if held ~= eggTool or held:GetAttribute("h") ~= CONFIG.DEFAULT_EGG then
-            unequipTools()
-            if not equipTool(eggTool) then
+        if getFarmEggCount() >= userMaxEggs then
+            State.lastStatus = "✅ Farm is full."
+            return true
+        end
+
+        local tool = getNightEggTool()
+
+        if not tool then
+            State.lastStatus = "🔴 Out of Night Eggs."
+            break
+        end
+
+        local toolUses = getEggToolUses(tool)
+        if toolUses <= 0 then
+            State.lastStatus = "🔴 Night Egg tool has no uses."
+            break
+        end
+
+        if #availablePositions == 0 then
+            availablePositions = getV52EggPositions(
+                center,
+                getTakenEggPositions()
+            )
+
+            if #availablePositions == 0 then
+                State.lastStatus = "🔴 No valid egg positions."
                 break
             end
         end
 
-        if CONFIG.FAST_PLACEMENT then
-            task.spawn(function(position, index)
-                task.wait((index - 1) * CONFIG.PLACE_STAGGER)
-                if State.enabled and not State.tradeBusy then
-                    pcall(function()
-                        PetEggService:FireServer("CreateEgg", position)
-                    end)
-                end
-            end, pos, i)
-        else
-            if State.enabled and not State.tradeBusy then
-                pcall(function()
-                    PetEggService:FireServer("CreateEgg", pos)
-                end)
+        if not getEquippedTool() or getEquippedTool() ~= tool then
+            unequipTools()
+            task.wait(0.2)
+            if not equipTool(tool) then
+                State.lastStatus = "🔴 Failed to equip Night Egg."
+                break
             end
-            task.wait(0.08)
+        end
+
+        local placePos = table.remove(availablePositions, 1)
+        if not placePos then
+            break
+        end
+
+        local startEggCount = getFarmEggCount()
+
+        State.lastStatus = string.format(
+            "🥚 Placing Night Egg %d/%d...",
+            math.min(startEggCount + 1, userMaxEggs),
+            userMaxEggs
+        )
+
+        -- This is the same direct CreateEgg call used by V52.
+        local fired = pcall(function()
+            PetEggService:FireServer("CreateEgg", placePos)
+        end)
+
+        if not fired then
+            State.lastStatus = "🔴 CreateEgg failed."
+            break
+        end
+
+        placedAny = true
+
+        -- V52 waits for the live farm count to actually increment.
+        local waitAmount = os.clock()
+
+        while true do
+            task.wait(0.1 + GetSafePing())
+
+            if not State.enabled or State.tradeBusy then
+                break
+            end
+
+            if os.clock() - waitAmount >= 3 then
+                break
+            end
+
+            local endEggCount = getFarmEggCount()
+
+            if endEggCount > startEggCount then
+                if endEggCount >= userMaxEggs then
+                    State.lastStatus = "✅ Farm is full."
+                end
+                break
+            end
+
+            if endEggCount >= userMaxEggs then
+                State.lastStatus = "✅ Farm is full."
+                break
+            end
         end
     end
 
-    -- Keep this short. The main cycle rechecks the live model count.
-    task.wait(math.max(0.15, amountToPlace * CONFIG.PLACE_STAGGER + 0.15))
     unequipTools()
+    return placedAny or getFarmEggCount() >= userMaxEggs
 end
-
----------------------------------------------------------------------
--- HATCH READY NIGHT EGGS
----------------------------------------------------------------------
 
 local function hatchReadyNightEggs()
     if not State.enabled or State.tradeBusy then
         return 0
     end
 
-    local ready = getReadyNightEggs()
-    if #ready == 0 then
+    -- V52 HatchAllEggsAvailable(): ready means TimeToHatch == 0 and
+    -- Name == "PetEgg".
+    local ready = {}
+
+    for _, eggModel in ipairs(getFarmEggModels()) do
+        if eggModel:IsA("Model")
+            and eggModel.Name == "PetEgg"
+            and tonumber(eggModel:GetAttribute("TimeToHatch")) == 0
+            and eggModel:GetAttribute("EggName") == CONFIG.DEFAULT_EGG
+        then
+            table.insert(ready, eggModel)
+        end
+    end
+
+    local countReady = #ready
+
+    if countReady <= 0 then
         return 0
     end
 
-    State.lastStatus = string.format("Hatching %d Night Egg(s)...", #ready)
+    State.lastStatus = string.format(
+        "♻️ Hatching all available Night Eggs... (%d)",
+        countReady
+    )
 
-    for index, eggModel in ipairs(ready) do
+    -- Match V52: fire HatchPet directly for each ready egg, one after another.
+    for _, eggModel in ipairs(ready) do
         if not State.enabled or State.tradeBusy then
             break
         end
 
-        local spacing = CONFIG.ULTRA and CONFIG.OVERDRIVE and 0.01
-            or (CONFIG.OVERDRIVE and 0.02 or 0.05)
-
-        task.spawn(function(model, order, delayBetween)
-            task.wait((order - 1) * delayBetween)
-            if State.enabled and not State.tradeBusy and model and model.Parent then
-                pcall(function()
-                    PetEggService:FireServer("HatchPet", model)
-                end)
-            end
-        end, eggModel, index, spacing)
+        if eggModel and eggModel.Parent then
+            pcall(function()
+                PetEggService:FireServer("HatchPet", eggModel)
+            end)
+        end
     end
 
-    -- Allow the server to consume the ready egg models before the next scan.
-    local deadline = os.clock() + 3
-    repeat
-        task.wait(0.08)
+    -- Match V52: allow server-side consumption of the ready egg models,
+    -- with a short timeout rather than launching parallel HatchPet threads.
+    local timeout = os.clock()
+
+    while true do
+        task.wait(0.3 + GetSafePing())
+
         if not State.enabled then
             break
         end
-        if #getReadyNightEggs() == 0 then
+
+        local remainingReady = 0
+
+        for _, eggModel in ipairs(getFarmEggModels()) do
+            if eggModel:IsA("Model")
+                and eggModel.Name == "PetEgg"
+                and tonumber(eggModel:GetAttribute("TimeToHatch")) == 0
+                and eggModel:GetAttribute("EggName") == CONFIG.DEFAULT_EGG
+            then
+                remainingReady += 1
+            end
+        end
+
+        if remainingReady == 0 then
             break
         end
-    until os.clock() >= deadline
 
-    return #ready
+        if os.clock() - timeout > 2 then
+            warn("Timeout: Some eggs were not hatched.")
+            break
+        end
+    end
+
+    return countReady
 end
 
----------------------------------------------------------------------
 -- NIGHT EGG PET GIFTING
 ---------------------------------------------------------------------
 
@@ -968,7 +1138,7 @@ local function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V1] Gift error:", err)
+        warn("[FABLE TRANSFER V3] Gift error:", err)
     end
 
     State.autoGiftBusy = false
@@ -1408,6 +1578,312 @@ local function handleArimabnsTrade()
 end
 
 ---------------------------------------------------------------------
+
+---------------------------------------------------------------------
+-- V52-DERIVED PLAYER STATS / ACTIVE PETS DISPLAY
+---------------------------------------------------------------------
+
+local PLAYER_STAT_KEYS = {
+    "EggRecoveryChance",
+    "PetSellEggRefundChance",
+    "PetEggHatchAgeBonus",
+    "PetEggHatchSizeBonus",
+    "PetPassiveBonus",
+    "SessionTime",
+    "SellSilverFruitRewardChance",
+    "Grow_Amount",
+}
+
+local function formatDuration(seconds)
+    seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+
+    local hours = math.floor(seconds / 3600)
+    local minutes = math.floor((seconds % 3600) / 60)
+    local secs = seconds % 60
+
+    if hours > 0 then
+        return string.format("%dh %02dm %02ds", hours, minutes, secs)
+    elseif minutes > 0 then
+        return string.format("%dm %02ds", minutes, secs)
+    end
+
+    return string.format("%ds", secs)
+end
+
+local function getPetDisplayData(uuid, data)
+    local inventory = getPetInventory(data)
+    local entry = inventory and inventory[uuid]
+
+    if not entry or not entry.PetData then
+        return tostring(uuid)
+    end
+
+    local petData = entry.PetData
+    local petName = tostring(entry.PetType or petData.Name or "Unknown")
+    local level = tonumber(petData.Level) or 0
+    local weight = tonumber(petData.BaseWeight) or 0
+    local mutation = tostring(petData.MutationType or "")
+
+    if mutation ~= "" then
+        return string.format("%s  Lv.%d  %.2fkg  [%s]", petName, level, weight, mutation)
+    end
+
+    return string.format("%s  Lv.%d  %.2fkg", petName, level, weight)
+end
+
+local function destroyPlayerStatsGui()
+    if State.playerStatsGui and State.playerStatsGui.Parent then
+        pcall(function()
+            State.playerStatsGui:Destroy()
+        end)
+    end
+
+    State.playerStatsGui = nil
+    State.playerStatsLabels = {}
+end
+
+local function ensurePlayerStatsGui()
+    if State.playerStatsGui and State.playerStatsGui.Parent then
+        return
+    end
+
+    destroyPlayerStatsGui()
+
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then
+        return
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "FableTransferPlayerStats"
+    gui.ResetOnSpawn = false
+    gui.DisplayOrder = 10000
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = playerGui
+
+    local frame = Instance.new("Frame")
+    frame.Name = "StatsFrame"
+    frame.AutomaticSize = Enum.AutomaticSize.Y
+    frame.Size = UDim2.fromOffset(245, 0)
+    frame.Position = UDim2.fromOffset(12, 92)
+    frame.BackgroundColor3 = Color3.fromRGB(15, 12, 22)
+    frame.BackgroundTransparency = 0.10
+    frame.BorderSizePixel = 0
+    frame.Parent = gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = frame
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1
+    stroke.Color = Color3.fromRGB(178, 105, 248)
+    stroke.Transparency = 0.35
+    stroke.Parent = frame
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 7)
+    padding.PaddingBottom = UDim.new(0, 7)
+    padding.PaddingLeft = UDim.new(0, 9)
+    padding.PaddingRight = UDim.new(0, 9)
+    padding.Parent = frame
+
+    local list = Instance.new("UIListLayout")
+    list.SortOrder = Enum.SortOrder.LayoutOrder
+    list.Padding = UDim.new(0, 2)
+    list.Parent = frame
+
+    local title = Instance.new("TextLabel")
+    title.BackgroundTransparency = 1
+    title.AutomaticSize = Enum.AutomaticSize.Y
+    title.Size = UDim2.new(1, 0, 0, 18)
+    title.Font = Enum.Font.GothamBold
+    title.Text = "FABLE • PLAYER STATS"
+    title.TextColor3 = Color3.fromRGB(231, 214, 255)
+    title.TextSize = 10
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.LayoutOrder = 0
+    title.Parent = frame
+
+    for index, key in ipairs(PLAYER_STAT_KEYS) do
+        local label = Instance.new("TextLabel")
+        label.Name = key
+        label.BackgroundTransparency = 1
+        label.Size = UDim2.new(1, 0, 0, 17)
+        label.Font = Enum.Font.SourceSans
+        label.Text = key .. ": 0"
+        label.TextColor3 = Color3.fromRGB(220, 216, 226)
+        label.TextSize = 9
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.LayoutOrder = index
+        label.Parent = frame
+
+        State.playerStatsLabels[key] = label
+    end
+
+    State.playerStatsGui = gui
+end
+
+local function updatePlayerStatsGui(data)
+    if not State.playerStatsEnabled then
+        destroyPlayerStatsGui()
+        return
+    end
+
+    ensurePlayerStatsGui()
+
+    local playerStatsLabels = State.playerStatsLabels
+    if not playerStatsLabels or not next(playerStatsLabels) then
+        return
+    end
+
+    for _, key in ipairs(PLAYER_STAT_KEYS) do
+        local label = playerStatsLabels[key]
+        if label then
+            local value = LocalPlayer:GetAttribute(key)
+            if value == nil then
+                value = 0
+            end
+
+            local formatted
+            if key == "SessionTime" then
+                formatted = formatDuration(value)
+            elseif typeof(value) == "number" then
+                formatted = string.format("%.2f", value)
+            else
+                formatted = tostring(value)
+            end
+
+            label.Text = key .. ": " .. formatted
+        end
+    end
+end
+
+local function destroyActivePetsGui()
+    if State.activePetsGui and State.activePetsGui.Parent then
+        pcall(function()
+            State.activePetsGui:Destroy()
+        end)
+    end
+
+    State.activePetsGui = nil
+    State.activePetsLabel = nil
+end
+
+local function ensureActivePetsGui()
+    if State.activePetsGui and State.activePetsGui.Parent and State.activePetsLabel then
+        return
+    end
+
+    destroyActivePetsGui()
+
+    local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not playerGui then
+        return
+    end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "FableTransferActivePets"
+    gui.ResetOnSpawn = false
+    gui.DisplayOrder = 10000
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = playerGui
+
+    local frame = Instance.new("Frame")
+    frame.Name = "ActivePetsFrame"
+    frame.AutomaticSize = Enum.AutomaticSize.Y
+    frame.Size = UDim2.fromOffset(275, 0)
+    frame.AnchorPoint = Vector2.new(1, 0.5)
+    frame.Position = UDim2.new(1, -12, 0.5, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(15, 12, 22)
+    frame.BackgroundTransparency = 0.10
+    frame.BorderSizePixel = 0
+    frame.Parent = gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = frame
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1
+    stroke.Color = Color3.fromRGB(178, 105, 248)
+    stroke.Transparency = 0.35
+    stroke.Parent = frame
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 7)
+    padding.PaddingBottom = UDim.new(0, 7)
+    padding.PaddingLeft = UDim.new(9, 0)
+    padding.PaddingRight = UDim.new(9, 0)
+    padding.Parent = frame
+
+    local list = Instance.new("UIListLayout")
+    list.SortOrder = Enum.SortOrder.LayoutOrder
+    list.Padding = UDim.new(0, 2)
+    list.Parent = frame
+
+    local title = Instance.new("TextLabel")
+    title.BackgroundTransparency = 1
+    title.Size = UDim2.new(1, 0, 0, 18)
+    title.Font = Enum.Font.GothamBold
+    title.Text = "FABLE • ACTIVE PETS"
+    title.TextColor3 = Color3.fromRGB(231, 214, 255)
+    title.TextSize = 10
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.LayoutOrder = 0
+    title.Parent = frame
+
+    local label = Instance.new("TextLabel")
+    label.Name = "ActivePetsDisplay"
+    label.BackgroundTransparency = 1
+    label.AutomaticSize = Enum.AutomaticSize.Y
+    label.Size = UDim2.new(1, 0, 0, 18)
+    label.Font = Enum.Font.SourceSansBold
+    label.Text = "No active pets."
+    label.TextColor3 = Color3.fromRGB(225, 220, 235)
+    label.TextSize = 9
+    label.TextWrapped = true
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextYAlignment = Enum.TextYAlignment.Top
+    label.LayoutOrder = 1
+    label.Parent = frame
+
+    State.activePetsGui = gui
+    State.activePetsLabel = label
+end
+
+local function updateActivePetsGui(data)
+    if not State.activePetsUIEnabled then
+        destroyActivePetsGui()
+        return
+    end
+
+    ensureActivePetsGui()
+
+    if not State.activePetsLabel then
+        return
+    end
+
+    local lines = {}
+    local equipped = getEquippedPets(data)
+
+    for index, uuid in ipairs(equipped) do
+        if index > CONFIG.TEAM_SLOTS then
+            break
+        end
+
+        if uuid then
+            table.insert(lines, string.format("%d. %s", index, getPetDisplayData(uuid, data)))
+        end
+    end
+
+    if #lines == 0 then
+        State.activePetsLabel.Text = "No active pets."
+    else
+        State.activePetsLabel.Text = table.concat(lines, "\n")
+    end
+end
+
 -- COMPACT FABLE TAB UI
 ---------------------------------------------------------------------
 
@@ -1424,7 +1900,7 @@ end
 
 local uiParent = getUIParent()
 
-local oldUI = uiParent:FindFirstChild("FableTransferV1")
+local oldUI = uiParent:FindFirstChild("FableTransferV3")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
@@ -1432,7 +1908,7 @@ if oldUI then
 end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "FableTransferV1"
+ScreenGui.Name = "FableTransferV3"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.DisplayOrder = 9999
@@ -1468,7 +1944,7 @@ local Title = Instance.new("TextLabel")
 Title.BackgroundTransparency = 1
 Title.Size = UDim2.new(1, -38, 1, 0)
 Title.Font = Enum.Font.GothamBold
-Title.Text = "FABLE TRANSFER V1"
+Title.Text = "FABLE TRANSFER V3"
 Title.TextColor3 = Color3.fromRGB(231, 214, 255)
 Title.TextSize = 16
 Title.TextXAlignment = Enum.TextXAlignment.Left
@@ -1779,7 +2255,7 @@ settingsScroll.Parent = SettingsPage
 
 local settingsContent = Instance.new("Frame")
 settingsContent.BackgroundTransparency = 1
-settingsContent.Size = UDim2.new(1, -6, 0, 260)
+settingsContent.Size = UDim2.new(1, -6, 0, 340)
 settingsContent.Parent = settingsScroll
 
 local fastPlacementToggle = makeToggle(
@@ -1844,12 +2320,27 @@ local favToggle = makeToggle(
     end
 )
 
+-- V52-derived display controls: Player Stats + Active Pets UI.
+local playerStatsToggle = makeToggle(
+    settingsContent, 256, "Player Stats", State.playerStatsEnabled,
+    function(value)
+        State.playerStatsEnabled = value
+    end
+)
+
+local activePetsToggle = makeToggle(
+    settingsContent, 288, "Active Pets UI", State.activePetsUIEnabled,
+    function(value)
+        State.activePetsUIEnabled = value
+    end
+)
+
 local maxInfo = Instance.new("TextLabel")
 maxInfo.BackgroundTransparency = 1
-maxInfo.Position = UDim2.fromOffset(10, 258)
-maxInfo.Size = UDim2.new(1, -20, 0, 30)
+maxInfo.Position = UDim2.fromOffset(10, 322)
+maxInfo.Size = UDim2.new(1, -20, 0, 36)
 maxInfo.Font = Enum.Font.Gotham
-maxInfo.Text = "Night Egg is fixed as default.\nPlacement always targets live MAX farm capacity."
+maxInfo.Text = "Night Egg is fixed as default.\nPlacement always targets live MAX farm capacity.\nPlayer Stats / Active Pets UI mirror the V52-style display controls. V3 hatch core follows V52."
 maxInfo.TextColor3 = Color3.fromRGB(150, 142, 165)
 maxInfo.TextSize = 8
 maxInfo.TextWrapped = true
@@ -1922,8 +2413,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V1_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V1_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V3_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V3_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -1978,6 +2469,9 @@ local function updateUI()
     transferEggLabel[2].Text = CONFIG.DEFAULT_EGG
     transferTeamLabel[2].Text = State.currentGardenTeamName or "None"
 
+    local currentData = getData()
+    updatePlayerStatsGui(currentData)
+    updateActivePetsGui(currentData)
     updateTeamPage()
 end
 
@@ -2012,6 +2506,9 @@ local function cleanup()
         unequipTools()
     end)
 
+    destroyPlayerStatsGui()
+    destroyActivePetsGui()
+
     if ScreenGui and ScreenGui.Parent then
         pcall(function()
             ScreenGui:Destroy()
@@ -2019,13 +2516,13 @@ local function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V1 = nil
+        getgenv().FABLE_TRANSFER_V3 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V1_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V3_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -2037,6 +2534,7 @@ Threads.tradeWatcher = task.spawn(function()
         if State.enabled and not State.tradeBusy then
             pcall(handleArimabnsTrade)
         end
+
         task.wait(0.05)
     end
 end)
@@ -2049,12 +2547,6 @@ Threads.main = task.spawn(function()
             continue
         end
 
-        -- Existing Night Egg pets are eligible immediately once Auto Hatch
-        -- is enabled, even before the first hatch performed by this instance.
-        if State.autoGiftEnabled then
-            pcall(fastGiftAllNightEggPets)
-        end
-
         if State.tradeBusy then
             task.wait(0.1)
             continue
@@ -2062,50 +2554,131 @@ Threads.main = task.spawn(function()
 
         State.cycleBusy = true
 
-        -- Step 1: fill the garden to the live MAX with Night Eggs.
-        pcall(placeNightEggsToMax)
+        -- =========================================================
+        -- V52 PHASE 1: inspect whether eggs are already ready.
+        -- =========================================================
+        local isReadyHatch = (#getReadyNightEggs() > 0)
 
-        if State.tradeBusy or not State.enabled then
+        -- =========================================================
+        -- V52 PHASE 2: Egg Reduction team.
+        -- If nothing is ready, equip the reduction team and wait.
+        -- =========================================================
+        if not isReadyHatch then
+            local reductionOK = false
+
+            pcall(function()
+                reductionOK = ensureReductionTeam()
+            end)
+
+            if reductionOK then
+                State.lastStatus = "🔄 Egg Reduction team active."
+            else
+                State.lastStatus = "⚠️ Reduction pets missing."
+            end
+        end
+
+        -- =========================================================
+        -- V52-style monitor: wait for eggs to become ready.
+        -- =========================================================
+        local hatchWaitStart = os.clock()
+        local hatchTimeout = 5 * 60
+
+        while State.enabled
+            and not State.tradeBusy
+            and #getReadyNightEggs() == 0
+        do
+            task.wait(0.5 + GetSafePing())
+
+            if os.clock() - hatchWaitStart >= hatchTimeout then
+                State.lastStatus = "♻️ Hatch wait timed out; restarting phase."
+                break
+            end
+
+            State.lastStatus = "⏳ Waiting for Night Eggs to finish..."
+        end
+
+        if not State.enabled or State.tradeBusy then
             State.cycleBusy = false
             continue
         end
 
-        -- Step 2: reduction team handles the wait/reduction phase.
-        local reductionOK = false
-        pcall(function()
-            reductionOK = ensureReductionTeam()
-        end)
-
-        if reductionOK then
-            State.lastStatus = "Egg Reduction active — waiting for Night Eggs."
-        else
-            State.lastStatus = "Reduction pets missing — waiting for Night Eggs."
-        end
-
-        -- Step 3: when any Night Egg is ready, switch to Koi/Ruby and hatch it.
+        -- =========================================================
+        -- V52 PHASE 3: Koi/Ruby team.
+        -- =========================================================
         local readyCount = #getReadyNightEggs()
+
         if readyCount > 0 then
             local koiOK = false
+
             pcall(function()
                 koiOK = ensureKoiTeam()
             end)
 
             if not koiOK then
-                State.lastStatus = "Koi/Ruby team missing — retrying."
-            else
-                local hatched = hatchReadyNightEggs()
-                if hatched > 0 and State.autoGiftEnabled then
-                    -- Step 4: fast-gift ALL Night Egg pets, not only newly hatched.
-                    pcall(fastGiftAllNightEggPets)
-                end
+                State.lastStatus = "⚠️ Koi/Ruby team missing."
+                State.cycleBusy = false
+                task.wait(0.5 + GetSafePing())
+                continue
             end
-        else
-            State.lastStatus = "Waiting for Night Eggs to finish..."
+
+            State.lastStatus = "⏳ Waiting for hatch buffs..."
+
+            -- V52 timing:
+            -- Fast + Ultra: 0.5s
+            -- Fast without Ultra: 2.5s
+            task.wait(
+                GetFastHatchMode()
+                    and (GetUltraMode() and (0.5 + GetSafePing())
+                        or (2.5 + GetSafePing()))
+                    or (4 + GetSafePing())
+            )
+
+            if State.tradeBusy or not State.enabled then
+                State.cycleBusy = false
+                continue
+            end
+
+            -- =====================================================
+            -- V52 PHASE 4: hatch all available eggs.
+            -- =====================================================
+            local hatched = hatchReadyNightEggs()
+
+            -- V52 locks the enhancement/pick-place system during hatch;
+            -- this dedicated script has no competing sell stage, so we
+            -- simply proceed to the transfer gift stage here.
+            if hatched > 0 and State.autoGiftEnabled then
+                pcall(fastGiftAllNightEggPets)
+            end
+
+            -- =====================================================
+            -- V52 PHASE 5: fast egg placement starts immediately after
+            -- hatching when fast egg placement is enabled.
+            -- =====================================================
+            if State.enabled
+                and not State.tradeBusy
+                and CONFIG.FAST_PLACEMENT
+            then
+                task.spawn(function()
+                    pcall(function()
+                        placeNightEggsToMax()
+                    end)
+                end)
+            end
         end
 
-        -- Step 5: next loop immediately tops the garden back to MAX.
+        -- Auto Pet Slot remains a parallel lightweight transfer helper.
+        if State.autoPetSlotEnabled and State.enabled and not State.autoSlotBusy then
+            pcall(startAutoPetSlot)
+        end
+
         State.cycleBusy = false
-        task.wait(CONFIG.LOOP_IDLE)
+
+        -- V52 fast mode uses only a small cadence between cycles.
+        if GetFastHatchMode() then
+            task.wait(0.5 + GetSafePing())
+        else
+            task.wait(1.5 + GetSafePing())
+        end
     end
 
     State.cycleBusy = false
@@ -2121,4 +2694,4 @@ end)
 
 State.lastStatus = "Auto Hatch is OFF."
 updateUI()
-print("[FABLE TRANSFER V1] Loaded — Auto Hatch is OFF. Enable it from the Transfer tab.")
+print("[FABLE TRANSFER V3] Loaded — Auto Hatch is OFF. V52 Auto Hatch core copied without pet selling. Enable it from the Transfer tab.")
