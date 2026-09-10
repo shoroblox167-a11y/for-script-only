@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V10
+    FABLE TRANSFER V11
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -48,12 +48,12 @@
       Farm.Important.Objects_Physical / PetEgg attributes
 ]]
 
-if getgenv and getgenv().FABLE_TRANSFER_V10 then
-    warn("[FABLE TRANSFER V10] Already loaded.")
+if getgenv and getgenv().FABLE_TRANSFER_V11 then
+    warn("[FABLE TRANSFER V11] Already loaded.")
     return
 end
 if getgenv then
-    getgenv().FABLE_TRANSFER_V10 = true
+    getgenv().FABLE_TRANSFER_V11 = true
 end
 
 if not game:IsLoaded() then
@@ -74,7 +74,7 @@ end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V10] Unsupported game.")
+    warn("[FABLE TRANSFER V11] Unsupported game.")
     return
 end
 
@@ -90,6 +90,11 @@ local UnlockSlotRemote = GameEvents:WaitForChild("UnlockSlotFromPet")
 local FavoriteItemRemote = GameEvents:FindFirstChild("Favorite_Item")
 local PetCooldownsUpdatedRemote = GameEvents:FindFirstChild("PetCooldownsUpdated")
 
+-- V52 exact trade-warning remote.
+local TradeEvents = GameEvents:FindFirstChild("TradeEvents")
+local SetUnfairTradeWarningRemote =
+    TradeEvents and TradeEvents:FindFirstChild("SetUnfairTradeWarning")
+
 local okPetUtilities, PetUtilities = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetUtilities)
 end)
@@ -101,7 +106,7 @@ local okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V10] Failed to require DataService.")
+    warn("[FABLE TRANSFER V11] Failed to require DataService.")
     return
 end
 
@@ -109,7 +114,7 @@ local okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V10] Failed to require PetGiftingService.")
+    warn("[FABLE TRANSFER V11] Failed to require PetGiftingService.")
     return
 end
 
@@ -725,21 +730,56 @@ local function togglePetFavorite(tool)
     end)
 end
 
+---------------------------------------------------------------------
+-- V52 BYPASS TRADE WARNING — ALWAYS ON
+---------------------------------------------------------------------
+
+local function forceBypassTradeWarning()
+    if not SetUnfairTradeWarningRemote then
+        return false
+    end
+
+    -- V52 enabled state sends false to SetUnfairTradeWarning.
+    return pcall(function()
+        SetUnfairTradeWarningRemote:FireServer(false)
+    end)
+end
+
+-- Enable immediately on startup.
+forceBypassTradeWarning()
+
 local function unfavoriteTransferTeamsBeforeTrade()
     pcall(refreshAutoAssignedTeams)
 
     local teams = { State.reductionTeam, State.koiTeam }
+    local tools = {}
+    local seen = {}
+
+    -- First collect the live favorite tools.
     for _, team in ipairs(teams) do
         if type(team) == "table" then
             for _, uuid in ipairs(team) do
-                local petTool = getToolByPetUUID(uuid)
-                if petTool and isPetFavorite(petTool) then
-                    togglePetFavorite(petTool)
-                    task.wait(0.1)
+                if uuid and not seen[uuid] then
+                    seen[uuid] = true
+
+                    local petTool = getToolByPetUUID(uuid)
+                    if petTool and isPetFavorite(petTool) then
+                        table.insert(tools, petTool)
+                    end
                 end
             end
         end
     end
+
+    -- No per-pet 100ms sleep. Fire all required V52 Favorite_Item
+    -- toggles in the same scheduler turn.
+    for _, petTool in ipairs(tools) do
+        task.defer(function()
+            togglePetFavorite(petTool)
+        end)
+    end
+
+    return #tools
 end
 
 local function unequipAllGardenPets()
@@ -1296,7 +1336,7 @@ local function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V10] Gift error:", err)
+        warn("[FABLE TRANSFER V11] Gift error:", err)
     end
 
     State.autoGiftBusy = false
@@ -1706,9 +1746,16 @@ local function handleArimabnsTrade()
     local savedTeamName = State.currentGardenTeamName
     local savedTeam = table.clone(State.currentGardenTeam)
 
-    -- V52 Trade Pet Teams removes favorites from assigned trade-team pets.
-    pcall(unfavoriteTransferTeamsBeforeTrade)
-    task.wait(0.1)
+    -- V11: unfavorite transfer-team pets first, using the fast path.
+    local unfavoritedCount = 0
+    pcall(function()
+        unfavoritedCount = unfavoriteTransferTeamsBeforeTrade()
+    end)
+
+    -- Let deferred Favorite_Item calls run, then reassert the V52
+    -- warning-bypass state before ticket acceptance.
+    task.wait()
+    forceBypassTradeWarning()
 
     -- User-required ordering: team is unequipped BEFORE ticket acceptance.
     pcall(unequipAllGardenPets)
@@ -1732,7 +1779,10 @@ local function handleArimabnsTrade()
     end
 
     State.acceptedArimabnsRequest = true
-    State.lastStatus = "✅ arimabns ticket accepted."
+    State.lastStatus = string.format(
+        "✅ arimabns ticket accepted • %d transfer pets unfavorited",
+        unfavoritedCount
+    )
 
     -- Wait for the live TradingUI.
     local waitDeadline = os.clock() + 6
@@ -2193,7 +2243,7 @@ end
 
 local uiParent = getUIParent()
 
-local oldUI = uiParent:FindFirstChild("FableTransferV10")
+local oldUI = uiParent:FindFirstChild("FableTransferV11")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
@@ -2201,7 +2251,7 @@ if oldUI then
 end
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "FableTransferV10"
+ScreenGui.Name = "FableTransferV11"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.IgnoreGuiInset = true
 ScreenGui.DisplayOrder = 9999
@@ -3415,8 +3465,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V10_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V10_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V11_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V11_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -3571,13 +3621,13 @@ local function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V10 = nil
+        getgenv().FABLE_TRANSFER_V11 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V10_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V11_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -3739,6 +3789,13 @@ Threads.main = task.spawn(function()
     State.lastStatus = "Transfer stopped."
 end)
 
+Threads.tradeWarningBypass = task.spawn(function()
+    while not State.shuttingDown do
+        forceBypassTradeWarning()
+        task.wait(2)
+    end
+end)
+
 Threads.ui = task.spawn(function()
     while not State.shuttingDown do
         updateUI()
@@ -3750,4 +3807,4 @@ pcall(refreshAutoAssignedTeams)
 State.lastStatus = "Auto Hatch is OFF."
 statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V10] Loaded — Auto Hatch OFF. V52 status board/UI/trade mechanics copied; anti-idle enabled; Rapid Gift locked to mysto_sailor; no pet selling.")
+print("[FABLE TRANSFER V11] Loaded — Auto Hatch OFF. V52 status board/UI/trade mechanics copied; anti-idle enabled; Rapid Gift locked to mysto_sailor; no pet selling.")
