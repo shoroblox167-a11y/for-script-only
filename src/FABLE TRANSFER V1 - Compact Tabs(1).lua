@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V11
+    FABLE TRANSFER V13
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -48,33 +48,45 @@
       Farm.Important.Objects_Physical / PetEgg attributes
 ]]
 
-if getgenv and getgenv().FABLE_TRANSFER_V11 then
-    warn("[FABLE TRANSFER V11] Already loaded.")
-    return
-end
+-- V13 compiler fix: top-level bindings are intentionally non-local because
+-- the previous build exceeded Luau's per-function local register limit.
+
+-- V12 startup recovery. A previous run can crash before cleanup and leave
+-- the global flag set. Never return silently: stop stale instance, clear
+-- the marker, and continue initialization.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V11 = true
+    local previousStop = getgenv().FABLE_TRANSFER_V13_STOP
+    if previousStop then
+        pcall(previousStop)
+        task.wait()
+    end
+    getgenv().FABLE_TRANSFER_V13 = nil
+    getgenv().FABLE_TRANSFER_V13_STOP = nil
+    getgenv().FABLE_TRANSFER_V13 = true
 end
 
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
 
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-local CoreGui = game:GetService("CoreGui")
-local UserInputService = game:GetService("UserInputService")
-local VirtualUser = game:GetService("VirtualUser")
+Players = game:GetService("Players")
+ReplicatedStorage = game:GetService("ReplicatedStorage")
+RunService = game:GetService("RunService")
+CoreGui = game:GetService("CoreGui")
+UserInputService = game:GetService("UserInputService")
+VirtualUser = game:GetService("VirtualUser")
 
-local LocalPlayer = Players.LocalPlayer
+LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
+    warn("[FABLE TRANSFER V13] LocalPlayer is not available.")
+    if getgenv then getgenv().FABLE_TRANSFER_V13 = nil end
     return
 end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V11] Unsupported game.")
+    warn("[FABLE TRANSFER V13] Unsupported game: " .. tostring(game.GameId))
+    if getgenv then getgenv().FABLE_TRANSFER_V13 = nil end
     return
 end
 
@@ -82,39 +94,41 @@ end
 -- SERVICES / MODULES
 ---------------------------------------------------------------------
 
-local GameEvents = ReplicatedStorage:WaitForChild("GameEvents")
-local PetsService = GameEvents:WaitForChild("PetsService")
-local PetEggService = GameEvents:WaitForChild("PetEggService")
-local AddItemRemote = GameEvents:WaitForChild("TradeEvents"):WaitForChild("AddItem")
-local UnlockSlotRemote = GameEvents:WaitForChild("UnlockSlotFromPet")
-local FavoriteItemRemote = GameEvents:FindFirstChild("Favorite_Item")
-local PetCooldownsUpdatedRemote = GameEvents:FindFirstChild("PetCooldownsUpdated")
+GameEvents = ReplicatedStorage:WaitForChild("GameEvents")
+PetsService = GameEvents:WaitForChild("PetsService")
+PetEggService = GameEvents:WaitForChild("PetEggService")
+AddItemRemote = GameEvents:WaitForChild("TradeEvents"):WaitForChild("AddItem")
+UnlockSlotRemote = GameEvents:WaitForChild("UnlockSlotFromPet")
+FavoriteItemRemote = GameEvents:FindFirstChild("Favorite_Item")
+PetCooldownsUpdatedRemote = GameEvents:FindFirstChild("PetCooldownsUpdated")
 
 -- V52 exact trade-warning remote.
-local TradeEvents = GameEvents:FindFirstChild("TradeEvents")
-local SetUnfairTradeWarningRemote =
+TradeEvents = GameEvents:FindFirstChild("TradeEvents")
+SetUnfairTradeWarningRemote =
     TradeEvents and TradeEvents:FindFirstChild("SetUnfairTradeWarning")
 
-local okPetUtilities, PetUtilities = pcall(function()
+okPetUtilities, PetUtilities = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetUtilities)
 end)
 if not okPetUtilities then
     PetUtilities = nil
 end
 
-local okData, DataService = pcall(function()
+okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V11] Failed to require DataService.")
+    warn("[FABLE TRANSFER V13] Failed to require DataService.")
+    if getgenv then getgenv().FABLE_TRANSFER_V13 = nil end
     return
 end
 
-local okGift, PetGiftingService = pcall(function()
+okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V11] Failed to require PetGiftingService.")
+    warn("[FABLE TRANSFER V13] Failed to require PetGiftingService.")
+    if getgenv then getgenv().FABLE_TRANSFER_V13 = nil end
     return
 end
 
@@ -122,7 +136,7 @@ end
 -- CONFIG
 ---------------------------------------------------------------------
 
-local CONFIG = {
+CONFIG = {
     TARGET_GIFT_PLAYER = "mysto_sailor",
     TARGET_TRADE_PLAYER = "arimabns",
     DEFAULT_EGG = "Night Egg",
@@ -182,7 +196,7 @@ local CONFIG = {
 -- STATE
 ---------------------------------------------------------------------
 
-local State = {
+State = {
     enabled = false,
     shuttingDown = false,
 
@@ -243,8 +257,8 @@ local State = {
     koiSelectedLabels = {},
 }
 
-local Connections = {}
-local Threads = {}
+Connections = {}
+Threads = {}
 
 ---------------------------------------------------------------------
 -- V6 ANTI-IDLE / BEST-EFFORT CLIENT KICK PROTECTION
@@ -299,7 +313,7 @@ end
 -- CHARACTER / INVENTORY HELPERS
 ---------------------------------------------------------------------
 
-local function refreshCharacterRefs()
+function refreshCharacterRefs()
     State.character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
     State.humanoid = State.character:FindFirstChildOfClass("Humanoid")
     State.backpack = LocalPlayer:FindFirstChildOfClass("Backpack") or LocalPlayer:WaitForChild("Backpack")
@@ -312,7 +326,7 @@ Connections.character = LocalPlayer.CharacterAdded:Connect(function()
     refreshCharacterRefs()
 end)
 
-local function getData()
+function getData()
     local ok, result = pcall(function()
         return DataService:GetData()
     end)
@@ -322,14 +336,14 @@ local function getData()
     return nil
 end
 
-local function getPetsData(data)
+function getPetsData(data)
     if not data then
         return nil
     end
     return data.PetsData or data
 end
 
-local function getPetInventory(data)
+function getPetInventory(data)
     local petsData = getPetsData(data)
     if not petsData then
         return {}
@@ -345,7 +359,7 @@ local function getPetInventory(data)
     return {}
 end
 
-local function getEquippedPets(data)
+function getEquippedPets(data)
     local petsData = getPetsData(data)
     if not petsData then
         return {}
@@ -357,7 +371,7 @@ local function getEquippedPets(data)
     return {}
 end
 
-local function getMaxEggCapacity(data)
+function getMaxEggCapacity(data)
     local petsData = getPetsData(data)
     if not petsData then
         return 0
@@ -371,7 +385,7 @@ local function getMaxEggCapacity(data)
     return tonumber(petsData.MaxEggsInFarm) or 0
 end
 
-local function getMaxEquippedPets(data)
+function getMaxEquippedPets(data)
     local petsData = getPetsData(data)
     if not petsData then
         return 0
@@ -385,7 +399,7 @@ local function getMaxEquippedPets(data)
     return tonumber(petsData.MaxEquippedPets) or 0
 end
 
-local function getToolByPetUUID(uuid)
+function getToolByPetUUID(uuid)
     if not uuid then
         return nil
     end
@@ -416,7 +430,7 @@ local function getToolByPetUUID(uuid)
     return nil
 end
 
-local function equipTool(tool)
+function equipTool(tool)
     refreshCharacterRefs()
     if not tool or not tool.Parent or not State.humanoid then
         return false
@@ -428,7 +442,7 @@ local function equipTool(tool)
     return ok
 end
 
-local function unequipTools()
+function unequipTools()
     refreshCharacterRefs()
     if State.humanoid then
         pcall(function()
@@ -437,7 +451,7 @@ local function unequipTools()
     end
 end
 
-local function getEquippedTool()
+function getEquippedTool()
     local character = State.character
     if not character then
         return nil
@@ -449,7 +463,7 @@ end
 -- FARM / EGG HELPERS
 ---------------------------------------------------------------------
 
-local function findMyFarm()
+function findMyFarm()
     local farms = workspace:FindFirstChild("Farm")
     if not farms then
         return nil
@@ -468,7 +482,7 @@ local function findMyFarm()
     return nil
 end
 
-local function refreshFarmRefs()
+function refreshFarmRefs()
     State.farm = findMyFarm()
     State.objectsPhysical = nil
     State.centerPart = nil
@@ -491,7 +505,7 @@ end
 
 refreshFarmRefs()
 
-local function getFarmEggModels()
+function getFarmEggModels()
     local result = {}
     local folder = State.objectsPhysical
     if not folder then
@@ -507,11 +521,11 @@ local function getFarmEggModels()
     return result
 end
 
-local function getFarmEggCount()
+function getFarmEggCount()
     return #getFarmEggModels()
 end
 
-local function getReadyNightEggs()
+function getReadyNightEggs()
     local result = {}
 
     for _, egg in ipairs(getFarmEggModels()) do
@@ -526,7 +540,7 @@ local function getReadyNightEggs()
     return result
 end
 
-local function getNightEggTool()
+function getNightEggTool()
     local character = State.character
     if character then
         local equipped = character:FindFirstChildOfClass("Tool")
@@ -547,14 +561,14 @@ local function getNightEggTool()
     return nil
 end
 
-local function getEggToolUses(tool)
+function getEggToolUses(tool)
     if not tool then
         return 0
     end
     return tonumber(tool:GetAttribute("e")) or 0
 end
 
-local function getTakenEggPositions()
+function getTakenEggPositions()
     local positions = {}
 
     for _, egg in ipairs(getFarmEggModels()) do
@@ -570,7 +584,7 @@ local function getTakenEggPositions()
 end
 
 -- Same middle-egg geometry used by the working V53 implementation.
-local function makeMiddleEggPositions(center, blockedList)
+function makeMiddleEggPositions(center, blockedList)
     local positions = {}
 
     local blockRadius = 4
@@ -617,7 +631,7 @@ end
 -- PET TEAM HELPERS
 ---------------------------------------------------------------------
 
-local function getTeamSlotCapacity(data)
+function getTeamSlotCapacity(data)
     local accountMax = getMaxEquippedPets(data)
     if accountMax > 0 then
         return math.min(CONFIG.TEAM_SLOTS, accountMax)
@@ -625,7 +639,7 @@ local function getTeamSlotCapacity(data)
     return CONFIG.TEAM_SLOTS
 end
 
-local function collectUUIDsByPetNames(inventory, allowedNames)
+function collectUUIDsByPetNames(inventory, allowedNames)
     local matches = {}
 
     for uuid, entry in pairs(inventory or {}) do
@@ -656,7 +670,7 @@ local function collectUUIDsByPetNames(inventory, allowedNames)
     return matches
 end
 
-local function buildReductionTeam()
+function buildReductionTeam()
     local data = getData()
     local inventory = getPetInventory(data)
     local maxPets = getTeamSlotCapacity(data)
@@ -681,7 +695,7 @@ local function buildReductionTeam()
     return team
 end
 
-local function buildKoiTeam()
+function buildKoiTeam()
     local data = getData()
     local inventory = getPetInventory(data)
     local maxPets = getTeamSlotCapacity(data)
@@ -717,11 +731,11 @@ end
 -- V52 FAVORITE HELPER
 ---------------------------------------------------------------------
 
-local function isPetFavorite(tool)
+function isPetFavorite(tool)
     return tool and tool:GetAttribute("d") == true
 end
 
-local function togglePetFavorite(tool)
+function togglePetFavorite(tool)
     if not tool or not FavoriteItemRemote then
         return false
     end
@@ -734,7 +748,7 @@ end
 -- V52 BYPASS TRADE WARNING — ALWAYS ON
 ---------------------------------------------------------------------
 
-local function forceBypassTradeWarning()
+function forceBypassTradeWarning()
     if not SetUnfairTradeWarningRemote then
         return false
     end
@@ -748,7 +762,7 @@ end
 -- Enable immediately on startup.
 forceBypassTradeWarning()
 
-local function unfavoriteTransferTeamsBeforeTrade()
+function unfavoriteTransferTeamsBeforeTrade()
     pcall(refreshAutoAssignedTeams)
 
     local teams = { State.reductionTeam, State.koiTeam }
@@ -782,7 +796,7 @@ local function unfavoriteTransferTeamsBeforeTrade()
     return #tools
 end
 
-local function unequipAllGardenPets()
+function unequipAllGardenPets()
     local data = getData()
     local equipped = getEquippedPets(data)
     local sent = {}
@@ -799,7 +813,7 @@ local function unequipAllGardenPets()
     task.wait(0.2)
 end
 
-local function equipGardenTeam(team, teamName)
+function equipGardenTeam(team, teamName)
     if type(team) ~= "table" or #team == 0 then
         State.currentGardenTeamName = teamName
         State.currentGardenTeam = {}
@@ -845,7 +859,7 @@ local function equipGardenTeam(team, teamName)
     return true
 end
 
-local function refreshAutoAssignedTeams()
+function refreshAutoAssignedTeams()
     if not State.autoAssignTeamsEnabled then
         return State.reductionTeam, State.koiTeam
     end
@@ -855,7 +869,7 @@ local function refreshAutoAssignedTeams()
     return State.reductionTeam, State.koiTeam
 end
 
-local function ensureReductionTeam()
+function ensureReductionTeam()
     refreshAutoAssignedTeams()
     local team = State.reductionTeam
     if #team == 0 then
@@ -871,7 +885,7 @@ local function ensureReductionTeam()
     return equipGardenTeam(team, "Reduction")
 end
 
-local function ensureKoiTeam()
+function ensureKoiTeam()
     refreshAutoAssignedTeams()
     local team = State.koiTeam
     if #team == 0 then
@@ -901,7 +915,7 @@ end)
 -- The workflow below intentionally follows the V52 Auto Hatch sequencing.
 -- Pet selling is deliberately omitted.
 
-local function GetSafePing()
+function GetSafePing()
     local minPing = 0.0001
 
     local ok, result = pcall(function()
@@ -912,16 +926,16 @@ local function GetSafePing()
     return ok and result or minPing
 end
 
-local function GetFastHatchMode()
+function GetFastHatchMode()
     -- Transfer's "Overdrive" switch maps to V52's fast-hatch mode.
     return CONFIG.OVERDRIVE == true
 end
 
-local function GetUltraMode()
+function GetUltraMode()
     return CONFIG.OVERDRIVE == true and CONFIG.ULTRA == true
 end
 
-local function getV52EggPositions(center, blockedList)
+function getV52EggPositions(center, blockedList)
     if CONFIG.MIDDLE_EGGS then
         local positions = {}
 
@@ -1006,7 +1020,7 @@ local function getV52EggPositions(center, blockedList)
     return positions
 end
 
-local function placeNightEggsToMax()
+function placeNightEggsToMax()
     if not State.enabled or State.tradeBusy then
         return false
     end
@@ -1152,7 +1166,7 @@ local function placeNightEggsToMax()
     return placedAny or getFarmEggCount() >= userMaxEggs
 end
 
-local function hatchReadyNightEggs()
+function hatchReadyNightEggs()
     if not State.enabled or State.tradeBusy then
         return 0
     end
@@ -1234,7 +1248,7 @@ end
 -- NIGHT EGG PET GIFTING
 ---------------------------------------------------------------------
 
-local function collectNightEggPetEntries()
+function collectNightEggPetEntries()
     local data = getData()
     local inventory = getPetInventory(data)
     local result = {}
@@ -1266,12 +1280,12 @@ local function collectNightEggPetEntries()
     return result
 end
 
-local function findGiftTarget()
+function findGiftTarget()
     -- Hard-locked target.
     return Players:FindFirstChild(CONFIG.TARGET_GIFT_PLAYER)
 end
 
-local function fastGiftAllNightEggPets()
+function fastGiftAllNightEggPets()
     if State.autoGiftBusy or State.tradeBusy then
         return
     end
@@ -1336,7 +1350,7 @@ local function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V11] Gift error:", err)
+        warn("[FABLE TRANSFER V13] Gift error:", err)
     end
 
     State.autoGiftBusy = false
@@ -1364,12 +1378,12 @@ end)
 -- AUTO PET SLOT
 ---------------------------------------------------------------------
 
-local function getPurchasedSlotCount(data)
+function getPurchasedSlotCount(data)
     local petsData = getPetsData(data)
     return tonumber(petsData and petsData.PurchasedEquipSlots) or 0
 end
 
-local function findLowestQualifyingPetUUID(inventory, requiredLevel)
+function findLowestQualifyingPetUUID(inventory, requiredLevel)
     local bestUUID = nil
     local bestLevel = nil
     local bestPetName = nil
@@ -1397,7 +1411,7 @@ local function findLowestQualifyingPetUUID(inventory, requiredLevel)
     return bestUUID, bestLevel, bestPetName
 end
 
-local function startAutoPetSlot()
+function startAutoPetSlot()
     if State.autoSlotBusy or not State.autoPetSlotEnabled then
         return
     end
@@ -1458,7 +1472,7 @@ end
 -- TRADE DETECTION / ACCEPT
 ---------------------------------------------------------------------
 
-local function textContainsTarget(root, target)
+function textContainsTarget(root, target)
     if not root then
         return false
     end
@@ -1482,23 +1496,23 @@ local function textContainsTarget(root, target)
     return false
 end
 
-local function getPlayerGui()
+function getPlayerGui()
     return LocalPlayer:FindFirstChild("PlayerGui")
 end
 
-local function getTradingUI()
+function getTradingUI()
     local gui = getPlayerGui()
     return gui and gui:FindFirstChild("TradingUI")
 end
 
 -- V52 TradeSystem.IsTradeActive()
-local function isTradeUIActive()
+function isTradeUIActive()
     local ui = getTradingUI()
     return ui ~= nil and ui.Enabled == true
 end
 
 -- V52 TradeSystem.OtherPlayerReady()
-local function otherPlayerReady()
+function otherPlayerReady()
     local ui = getTradingUI()
     if not ui then
         return false
@@ -1517,7 +1531,7 @@ local function otherPlayerReady()
 end
 
 -- V52 TradeSystem.MyAddedItemsCount()
-local function myTradeItemCount()
+function myTradeItemCount()
     local ui = getTradingUI()
     local liveTrade = ui and ui:FindFirstChild("LiveTrade")
     local myPlr = liveTrade and liveTrade:FindFirstChild("MyPlr")
@@ -1540,7 +1554,7 @@ end
 -- V52 exact ticket path:
 -- Gift_Notification -> Frame -> TradeRequest -> Wrapper -> Canvas ->
 -- Segment -> Buttons -> ACCEPT_BUTTON -> Main -> SENSOR
-local function isArimabnsTradeRequestVisible()
+function isArimabnsTradeRequestVisible()
     local gui = getPlayerGui()
     if not gui then
         return false
@@ -1564,7 +1578,7 @@ local function isArimabnsTradeRequestVisible()
     return textContainsTarget(tradeReq, CONFIG.TARGET_TRADE_PLAYER)
 end
 
-local function clickTradeRequestAccept()
+function clickTradeRequestAccept()
     local gui = getPlayerGui()
     if not gui then
         return false
@@ -1623,7 +1637,7 @@ end
 
 -- V52 exact in-trade Accept path:
 -- TradingUI -> LiveTrade -> Options -> Accept
-local function clickTradeAccept()
+function clickTradeAccept()
     local ui = getTradingUI()
     if not ui or not ui.Enabled then
         return false
@@ -1665,7 +1679,7 @@ local function clickTradeAccept()
     return didClick
 end
 
-local function isActiveTradeArimabns()
+function isActiveTradeArimabns()
     local ui = getTradingUI()
     if not ui then
         return false
@@ -1680,7 +1694,7 @@ end
 
 -- The transfer has two garden teams. Preserve V52's ordering:
 -- Egg Reduction -> Koi. Add up to the game's 12-trade-item limit.
-local function getTradeTeamUUIDs()
+function getTradeTeamUUIDs()
     local seen = {}
     local result = {}
 
@@ -1710,7 +1724,7 @@ end
 
 -- V52 Trade Pet Teams: add the assigned team pets to the active trade,
 -- one by one, checking for the live inventory tool before AddItem.
-local function addTradePetTeams()
+function addTradePetTeams()
     if myTradeItemCount() >= 12 then
         return
     end
@@ -1735,7 +1749,7 @@ end
 -- Full V52-style arimabns trade lifecycle, specialized to this project:
 -- ticket -> unfavorite transfer pets -> unequip garden team -> accept ticket ->
 -- add transfer teams -> target ready -> accept/confirm -> restore garden team.
-local function handleArimabnsTrade()
+function handleArimabnsTrade()
     if State.tradeBusy or not isArimabnsTradeRequestVisible() then
         return false
     end
@@ -1886,7 +1900,7 @@ end)
 -- V52 PLAYER STATS + ACTIVE PETS UI
 ---------------------------------------------------------------------
 
-local PLAYER_SECRETS = {
+PLAYER_SECRETS = {
     "EggRecoveryChance",
     "PetSellEggRefundChance",
     "PetEggHatchAgeBonus",
@@ -1897,7 +1911,7 @@ local PLAYER_SECRETS = {
     "Grow_Amount",
 }
 
-local function shortNameNoDots(str, max)
+function shortNameNoDots(str, max)
     str = tostring(str or "")
     max = max or 3
     if #str > max then
@@ -1906,12 +1920,12 @@ local function shortNameNoDots(str, max)
     return str
 end
 
-local function fmtTimeV52(secs)
+function fmtTimeV52(secs)
     secs = math.max(0, tonumber(secs) or 0)
     return string.format("%02d:%02d", math.floor(secs / 60), math.floor(secs % 60))
 end
 
-local function getRealPetWeightV52(baseWeight, level)
+function getRealPetWeightV52(baseWeight, level)
     if not PetUtilities then
         return tonumber(baseWeight) or 0
     end
@@ -1924,7 +1938,7 @@ local function getRealPetWeightV52(baseWeight, level)
     return tonumber(baseWeight) or 0
 end
 
-local function getPetEntryV5(uuid, data)
+function getPetEntryV5(uuid, data)
     local inventory = getPetInventory(data)
     return inventory and inventory[uuid]
 end
@@ -1955,7 +1969,7 @@ if PetCooldownsUpdatedRemote then
     end)
 end
 
-local function getSkillCooldownTextV52(uuid)
+function getSkillCooldownTextV52(uuid)
     local textValue = ""
     local petInfo = State.cooldownPets[uuid]
     if type(petInfo) ~= "table" then
@@ -1974,7 +1988,7 @@ local function getSkillCooldownTextV52(uuid)
     return textValue
 end
 
-local function destroyPlayerStatsGui()
+function destroyPlayerStatsGui()
     if State.playerStatsGui and State.playerStatsGui.Parent then
         pcall(function() State.playerStatsGui:Destroy() end)
     end
@@ -1982,7 +1996,7 @@ local function destroyPlayerStatsGui()
     State.playerStatsLabels = {}
 end
 
-local function updatePlayerStatusUIV52()
+function updatePlayerStatusUIV52()
     if not State.playerStatsEnabled then
         destroyPlayerStatsGui()
         return
@@ -2067,7 +2081,7 @@ local function updatePlayerStatusUIV52()
     end
 end
 
-local function destroyActivePetsGui()
+function destroyActivePetsGui()
     if State.activePetsGui and State.activePetsGui.Parent then
         pcall(function() State.activePetsGui:Destroy() end)
     end
@@ -2075,7 +2089,7 @@ local function destroyActivePetsGui()
     State.activePetsLabel = nil
 end
 
-local function makeActivePetUiV52(data)
+function makeActivePetUiV52(data)
     local activeList = getEquippedPets(data)
     local now = os.time()
     local currentUUIDs = {}
@@ -2164,7 +2178,7 @@ local function makeActivePetUiV52(data)
     return lines
 end
 
-local function updateActivePetsUIV52(data)
+function updateActivePetsUIV52(data)
     if not State.activePetsUIEnabled then
         destroyActivePetsGui()
         return
@@ -2230,7 +2244,7 @@ end)
 -- COMPACT FABLE TAB UI
 ---------------------------------------------------------------------
 
-local function getUIParent()
+function getUIParent()
     if gethui then
         local ok, hui = pcall(gethui)
         if ok and hui then
@@ -2241,24 +2255,35 @@ local function getUIParent()
     return CoreGui
 end
 
-local uiParent = getUIParent()
+uiParent = getUIParent()
 
-local oldUI = uiParent:FindFirstChild("FableTransferV11")
+oldUI = uiParent:FindFirstChild("FableTransferV13")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
     end)
 end
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "FableTransferV11"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.IgnoreGuiInset = true
-ScreenGui.DisplayOrder = 9999
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.Parent = uiParent
+ScreenGui = nil
+okGui, guiErr = pcall(function()
+    ScreenGui = Instance.new("ScreenGui")
+    ScreenGui.Name = "FableTransferV13"
+    ScreenGui.ResetOnSpawn = false
+    ScreenGui.IgnoreGuiInset = true
+    ScreenGui.DisplayOrder = 9999
+    ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    ScreenGui.Parent = uiParent
+end)
 
-local Main = Instance.new("Frame")
+if not okGui or not ScreenGui then
+    warn("[FABLE TRANSFER V13] GUI creation failed: " .. tostring(guiErr))
+    if getgenv then getgenv().FABLE_TRANSFER_V13 = nil end
+    return
+end
+
+print("[FABLE TRANSFER V13] GUI creation started.")
+
+Main = Instance.new("Frame")
 Main.Name = "Main"
 Main.Size = UDim2.fromOffset(600, 480)
 Main.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -2268,28 +2293,28 @@ Main.BackgroundTransparency = 0.04
 Main.BorderSizePixel = 0
 Main.Parent = ScreenGui
 
-local MainScale = Instance.new("UIScale")
+MainScale = Instance.new("UIScale")
 MainScale.Name = "V52CompactScale"
 MainScale.Scale = 0.78
 MainScale.Parent = Main
 
-local MainCorner = Instance.new("UICorner")
+MainCorner = Instance.new("UICorner")
 MainCorner.CornerRadius = UDim.new(0, 4)
 MainCorner.Parent = Main
 
-local MainStroke = Instance.new("UIStroke")
+MainStroke = Instance.new("UIStroke")
 MainStroke.Thickness = 1.25
 MainStroke.Color = Color3.fromRGB(178, 105, 248)
 MainStroke.Transparency = 0.12
 MainStroke.Parent = Main
 
-local Header = Instance.new("Frame")
+Header = Instance.new("Frame")
 Header.BackgroundTransparency = 1
 Header.Position = UDim2.fromOffset(190, 8)
 Header.Size = UDim2.new(1, -200, 0, 58)
 Header.Parent = Main
 
-local Title = Instance.new("TextLabel")
+Title = Instance.new("TextLabel")
 Title.BackgroundTransparency = 1
 Title.Position = UDim2.fromOffset(0, 0)
 Title.Size = UDim2.new(1, -250, 0, 26)
@@ -2300,7 +2325,7 @@ Title.TextSize = 16
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.Parent = Header
 
-local Subtitle = Instance.new("TextLabel")
+Subtitle = Instance.new("TextLabel")
 Subtitle.BackgroundTransparency = 1
 Subtitle.Position = UDim2.fromOffset(0, 25)
 Subtitle.Size = UDim2.new(1, -250, 0, 24)
@@ -2311,7 +2336,7 @@ Subtitle.TextSize = 11
 Subtitle.TextXAlignment = Enum.TextXAlignment.Left
 Subtitle.Parent = Header
 
-local SearchBox = Instance.new("TextBox")
+SearchBox = Instance.new("TextBox")
 SearchBox.Name = "Search"
 SearchBox.Position = UDim2.new(1, -190, 0, 0)
 SearchBox.Size = UDim2.fromOffset(180, 40)
@@ -2328,17 +2353,17 @@ SearchBox.TextSize = 11
 SearchBox.TextXAlignment = Enum.TextXAlignment.Left
 SearchBox.Parent = Header
 
-local SearchCorner = Instance.new("UICorner")
+SearchCorner = Instance.new("UICorner")
 SearchCorner.CornerRadius = UDim.new(0, 9)
 SearchCorner.Parent = SearchBox
 
-local SearchStroke = Instance.new("UIStroke")
+SearchStroke = Instance.new("UIStroke")
 SearchStroke.Color = Color3.fromRGB(178, 105, 248)
 SearchStroke.Thickness = 1
 SearchStroke.Transparency = 0.12
 SearchStroke.Parent = SearchBox
 
-local Close = Instance.new("TextButton")
+Close = Instance.new("TextButton")
 Close.Name = "Close"
 Close.Size = UDim2.fromOffset(26, 24)
 Close.Position = UDim2.new(1, -28, 0, 43)
@@ -2357,7 +2382,7 @@ Close.MouseButton1Click:Connect(function()
     end
 end)
 
-local Sidebar = Instance.new("Frame")
+Sidebar = Instance.new("Frame")
 Sidebar.Name = "Sidebar"
 Sidebar.Position = UDim2.fromOffset(0, 0)
 Sidebar.Size = UDim2.fromOffset(180, 500)
@@ -2366,13 +2391,13 @@ Sidebar.BackgroundTransparency = 0.02
 Sidebar.BorderSizePixel = 0
 Sidebar.Parent = Main
 
-local SidebarStroke = Instance.new("UIStroke")
+SidebarStroke = Instance.new("UIStroke")
 SidebarStroke.Color = Color3.fromRGB(178, 105, 248)
 SidebarStroke.Thickness = 1
 SidebarStroke.Transparency = 0.35
 SidebarStroke.Parent = Sidebar
 
-local SidebarTitle = Instance.new("TextLabel")
+SidebarTitle = Instance.new("TextLabel")
 SidebarTitle.BackgroundTransparency = 1
 SidebarTitle.Position = UDim2.fromOffset(20, 24)
 SidebarTitle.Size = UDim2.new(1, -40, 0, 30)
@@ -2383,29 +2408,29 @@ SidebarTitle.TextSize = 18
 SidebarTitle.TextXAlignment = Enum.TextXAlignment.Center
 SidebarTitle.Parent = Sidebar
 
-local TabHolder = Instance.new("Frame")
+TabHolder = Instance.new("Frame")
 TabHolder.BackgroundTransparency = 1
 TabHolder.Position = UDim2.fromOffset(8, 70)
 TabHolder.Size = UDim2.new(1, -16, 1, -82)
 TabHolder.Parent = Sidebar
 
-local TabLayout = Instance.new("UIListLayout")
+TabLayout = Instance.new("UIListLayout")
 TabLayout.SortOrder = Enum.SortOrder.LayoutOrder
 TabLayout.Padding = UDim.new(0, 5)
 TabLayout.Parent = TabHolder
 
-local TabNames = {"Status Board", "Transfer", "Pet Teams", "Settings"}
-local TabButtons = {}
-local Pages = {}
+TabNames = {"Status Board", "Transfer", "Pet Teams", "Settings"}
+TabButtons = {}
+Pages = {}
 
-local TabMeta = {
+TabMeta = {
     ["Status Board"] = {"∿", "Status"},
     ["Transfer"] = {"⌁", "Automation"},
     ["Pet Teams"] = {"♧", "Teams"},
     ["Settings"] = {"⚙", "Settings"},
 }
 
-local function makeTabButton(name, index)
+function makeTabButton(name, index)
     local button = Instance.new("TextButton")
     button.Name = name:gsub("%s+", "") .. "Tab"
     button.Size = UDim2.new(1, 0, 0, 42)
@@ -2451,7 +2476,7 @@ for index, name in ipairs(TabNames) do
     makeTabButton(name, index)
 end
 
-local PagesHolder = Instance.new("Frame")
+PagesHolder = Instance.new("Frame")
 PagesHolder.BackgroundTransparency = 1
 PagesHolder.Position = UDim2.fromOffset(190, 74)
 PagesHolder.Size = UDim2.new(1, -200, 1, -84)
@@ -2461,7 +2486,7 @@ PagesHolder.Parent = Main
 -- V52-STYLE FLOATING F TOGGLE
 ---------------------------------------------------------------------
 
-local FloatingToggle = Instance.new("TextButton")
+FloatingToggle = Instance.new("TextButton")
 FloatingToggle.Name = "FableToggle"
 FloatingToggle.AnchorPoint = Vector2.new(0, 0)
 FloatingToggle.Position = UDim2.fromScale(0.012, 0.16)
@@ -2474,17 +2499,17 @@ FloatingToggle.Text = ""
 FloatingToggle.ZIndex = 100
 FloatingToggle.Parent = ScreenGui
 
-local floatingCorner = Instance.new("UICorner")
+floatingCorner = Instance.new("UICorner")
 floatingCorner.CornerRadius = UDim.new(1, 0)
 floatingCorner.Parent = FloatingToggle
 
-local floatingStroke = Instance.new("UIStroke")
+floatingStroke = Instance.new("UIStroke")
 floatingStroke.Thickness = 2
 floatingStroke.Transparency = 0.05
 floatingStroke.Color = Color3.fromRGB(178, 105, 248)
 floatingStroke.Parent = FloatingToggle
 
-local floatingInner = Instance.new("Frame")
+floatingInner = Instance.new("Frame")
 floatingInner.AnchorPoint = Vector2.new(0.5, 0.5)
 floatingInner.Position = UDim2.fromScale(0.5, 0.5)
 floatingInner.Size = UDim2.fromScale(0.74, 0.74)
@@ -2493,11 +2518,11 @@ floatingInner.BorderSizePixel = 0
 floatingInner.ZIndex = 101
 floatingInner.Parent = FloatingToggle
 
-local floatingInnerCorner = Instance.new("UICorner")
+floatingInnerCorner = Instance.new("UICorner")
 floatingInnerCorner.CornerRadius = UDim.new(1, 0)
 floatingInnerCorner.Parent = floatingInner
 
-local floatingBrand = Instance.new("TextLabel")
+floatingBrand = Instance.new("TextLabel")
 floatingBrand.BackgroundTransparency = 1
 floatingBrand.Size = UDim2.fromScale(1, 1)
 floatingBrand.Font = Enum.Font.GothamBlack
@@ -2507,7 +2532,7 @@ floatingBrand.TextScaled = true
 floatingBrand.ZIndex = 102
 floatingBrand.Parent = floatingInner
 
-local function setMainVisible(visible)
+function setMainVisible(visible)
     Main.Visible = visible
     FloatingToggle.Visible = true
 end
@@ -2526,7 +2551,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
     end
 end)
 
-local function makePage(name)
+function makePage(name)
     local page = Instance.new("Frame")
     page.Name = name:gsub("%s+", "") .. "Page"
     page.BackgroundTransparency = 1
@@ -2537,12 +2562,12 @@ local function makePage(name)
     return page
 end
 
-local StatusPage = makePage("Status Board")
-local TransferPage = makePage("Transfer")
-local TeamsPage = makePage("Pet Teams")
-local SettingsPage = makePage("Settings")
+StatusPage = makePage("Status Board")
+TransferPage = makePage("Transfer")
+TeamsPage = makePage("Pet Teams")
+SettingsPage = makePage("Settings")
 
-local function makeSection(parent, titleText, y, height)
+function makeSection(parent, titleText, y, height)
     local section = Instance.new("Frame")
     section.Size = UDim2.new(1, 0, 0, height)
     section.Position = UDim2.fromOffset(0, y)
@@ -2569,7 +2594,7 @@ local function makeSection(parent, titleText, y, height)
     return section
 end
 
-local function makeLine(parent, y, leftText, rightText)
+function makeLine(parent, y, leftText, rightText)
     local left = Instance.new("TextLabel")
     left.BackgroundTransparency = 1
     left.Position = UDim2.fromOffset(10, y)
@@ -2595,7 +2620,7 @@ local function makeLine(parent, y, leftText, rightText)
     return left, right
 end
 
-local function makeToggle(parent, y, labelText, defaultValue, callback)
+function makeToggle(parent, y, labelText, defaultValue, callback)
     local button = Instance.new("TextButton")
     button.Size = UDim2.new(1, 0, 0, 28)
     button.Position = UDim2.fromOffset(0, y)
@@ -2670,14 +2695,14 @@ end
 -- two-column field layout: one STATUS BOARD group on the left,
 -- LIVE FEED on the right, and LATEST MESSAGE inside the left group.
 
-local statusLeft = makeSection(StatusPage, "STATUS BOARD", 0, 444)
+statusLeft = makeSection(StatusPage, "STATUS BOARD", 0, 444)
 statusLeft.Size = UDim2.new(0.56, -4, 0, 444)
 
-local statusRight = makeSection(StatusPage, "LIVE FEED", 0, 444)
+statusRight = makeSection(StatusPage, "LIVE FEED", 0, 444)
 statusRight.Position = UDim2.new(0.56, 4, 0, 0)
 statusRight.Size = UDim2.new(0.44, -4, 0, 444)
 
-local statusStateLabel = Instance.new("TextLabel")
+statusStateLabel = Instance.new("TextLabel")
 statusStateLabel.BackgroundTransparency = 1
 statusStateLabel.Position = UDim2.fromOffset(12, 24)
 statusStateLabel.Size = UDim2.new(1, -24, 0, 24)
@@ -2688,7 +2713,7 @@ statusStateLabel.TextSize = 16
 statusStateLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusStateLabel.Parent = statusLeft
 
-local statusDetails = Instance.new("TextLabel")
+statusDetails = Instance.new("TextLabel")
 statusDetails.BackgroundTransparency = 1
 statusDetails.Position = UDim2.fromOffset(12, 62)
 statusDetails.Size = UDim2.new(1, -24, 0, 250)
@@ -2702,7 +2727,7 @@ statusDetails.TextYAlignment = Enum.TextYAlignment.Top
 statusDetails.RichText = true
 statusDetails.Parent = statusLeft
 
-local statusDivider = Instance.new("Frame")
+statusDivider = Instance.new("Frame")
 statusDivider.BorderSizePixel = 0
 statusDivider.BackgroundColor3 = Color3.fromRGB(178, 105, 248)
 statusDivider.BackgroundTransparency = 0.25
@@ -2710,7 +2735,7 @@ statusDivider.Position = UDim2.fromOffset(12, 322)
 statusDivider.Size = UDim2.new(1, -24, 0, 1)
 statusDivider.Parent = statusLeft
 
-local statusLatestTitle = Instance.new("TextLabel")
+statusLatestTitle = Instance.new("TextLabel")
 statusLatestTitle.BackgroundTransparency = 1
 statusLatestTitle.Position = UDim2.fromOffset(12, 338)
 statusLatestTitle.Size = UDim2.new(1, -24, 0, 20)
@@ -2721,7 +2746,7 @@ statusLatestTitle.TextSize = 10
 statusLatestTitle.TextXAlignment = Enum.TextXAlignment.Left
 statusLatestTitle.Parent = statusLeft
 
-local statusLatestLabel = Instance.new("TextLabel")
+statusLatestLabel = Instance.new("TextLabel")
 statusLatestLabel.BackgroundTransparency = 1
 statusLatestLabel.Position = UDim2.fromOffset(12, 360)
 statusLatestLabel.Size = UDim2.new(1, -24, 0, 66)
@@ -2735,7 +2760,7 @@ statusLatestLabel.TextYAlignment = Enum.TextYAlignment.Top
 statusLatestLabel.RichText = true
 statusLatestLabel.Parent = statusLeft
 
-local statusFeedLabel = Instance.new("TextLabel")
+statusFeedLabel = Instance.new("TextLabel")
 statusFeedLabel.BackgroundTransparency = 1
 statusFeedLabel.Position = UDim2.fromOffset(12, 30)
 statusFeedLabel.Size = UDim2.new(1, -24, 1, -42)
@@ -2749,7 +2774,7 @@ statusFeedLabel.TextYAlignment = Enum.TextYAlignment.Top
 statusFeedLabel.RichText = true
 statusFeedLabel.Parent = statusRight
 
-local statusFields = {
+statusFields = {
     {"Current Stage", "IDLE"},
     {"Sub Task", "Waiting for Auto Hatch..."},
     {"Eggs on Farm", "0 / 0"},
@@ -2761,12 +2786,12 @@ local statusFields = {
     {"Uptime", "00:00:00"},
 }
 
-local statusValues = {}
+statusValues = {}
 for _, pair in ipairs(statusFields) do
     statusValues[pair[1]] = pair[2]
 end
 
-local function renderStatusDetails()
+function renderStatusDetails()
     local order = {
         "Current Stage",
         "Sub Task",
@@ -2804,7 +2829,7 @@ end
 
 renderStatusDetails()
 
-local function statusFormatUptime(seconds)
+function statusFormatUptime(seconds)
     local elapsed = math.max(0, math.floor(seconds or 0))
     local hours = math.floor(elapsed / 3600)
     elapsed %= 3600
@@ -2813,7 +2838,7 @@ local function statusFormatUptime(seconds)
     return string.format("%02d:%02d:%02d", hours, minutes, secs)
 end
 
-local function statusGetStage()
+function statusGetStage()
     if not State.enabled then
         return "IDLE"
     end
@@ -2841,7 +2866,7 @@ local function statusGetStage()
     return "PLACE"
 end
 
-local function statusGetNextAction(stage)
+function statusGetNextAction(stage)
     if not State.enabled then
         return "Enable Auto Hatch"
     end
@@ -2865,7 +2890,7 @@ local function statusGetNextAction(stage)
     return "Continue transfer cycle..."
 end
 
-local function statusPush(message)
+function statusPush(message)
     message = tostring(message or "")
     if message == "" or message == State.statusLastMessage then
         return
@@ -2883,7 +2908,7 @@ local function statusPush(message)
     State.statusLatest = line
 end
 
-local function statusRebuildFeed()
+function statusRebuildFeed()
     if #State.statusFeedLines == 0 then
         statusFeedLabel.Text = "[--:--:--]  Waiting for Fable activity..."
         return
@@ -2906,7 +2931,7 @@ local function statusRebuildFeed()
     statusFeedLabel.Text = table.concat(output, "\n")
 end
 
-local function updateStatusBoard()
+function updateStatusBoard()
     local data = getData()
     local inventory = getPetInventory(data)
     local farmCount = getFarmEggCount()
@@ -2966,9 +2991,9 @@ statusPush("Fable Status initialized")
 statusRebuildFeed()
 
 -- Transfer page.
-local transferSection = makeSection(TransferPage, "TRANSFER", 0, 185)
+transferSection = makeSection(TransferPage, "TRANSFER", 0, 185)
 
-local autoHatchToggle = makeToggle(
+autoHatchToggle = makeToggle(
     transferSection,
     28,
     "Auto Hatch / Transfer",
@@ -2986,14 +3011,14 @@ local autoHatchToggle = makeToggle(
     end
 )
 
-local transferEggLabel = makeLine(transferSection, 61, "Egg", CONFIG.DEFAULT_EGG)
-local transferModeLabel = makeLine(transferSection, 82, "Placement", CONFIG.FAST_PLACEMENT and "FAST" or "NORMAL")
-local transferMaxLabel = makeLine(transferSection, 103, "Garden", "MAX")
-local transferTeamLabel = makeLine(transferSection, 124, "Team", "None")
+transferEggLabel = makeLine(transferSection, 61, "Egg", CONFIG.DEFAULT_EGG)
+transferModeLabel = makeLine(transferSection, 82, "Placement", CONFIG.FAST_PLACEMENT and "FAST" or "NORMAL")
+transferMaxLabel = makeLine(transferSection, 103, "Garden", "MAX")
+transferTeamLabel = makeLine(transferSection, 124, "Team", "None")
 
-local statusSection = makeSection(TransferPage, "STATUS", 193, 86)
+statusSection = makeSection(TransferPage, "STATUS", 193, 86)
 
-local statusLabel = Instance.new("TextLabel")
+statusLabel = Instance.new("TextLabel")
 statusLabel.BackgroundTransparency = 1
 statusLabel.Position = UDim2.fromOffset(10, 25)
 statusLabel.Size = UDim2.new(1, -20, 0, 48)
@@ -3006,12 +3031,12 @@ statusLabel.TextXAlignment = Enum.TextXAlignment.Left
 statusLabel.TextYAlignment = Enum.TextYAlignment.Center
 statusLabel.Parent = statusSection
 
-local updateTeamPage
+updateTeamPage = nil
 
 -- Pet Teams page.
-local teamTop = makeSection(TeamsPage, "AUTO ASSIGN TEAMS", 0, 42)
+teamTop = makeSection(TeamsPage, "AUTO ASSIGN TEAMS", 0, 42)
 
-local autoAssignToggle = makeToggle(
+autoAssignToggle = makeToggle(
     teamTop, 22, "Auto Assign Teams", State.autoAssignTeamsEnabled,
     function(value)
         State.autoAssignTeamsEnabled = value
@@ -3022,16 +3047,16 @@ local autoAssignToggle = makeToggle(
     end
 )
 
-local teamColumns = Instance.new("Frame")
+teamColumns = Instance.new("Frame")
 teamColumns.BackgroundTransparency = 1
 teamColumns.Position = UDim2.fromOffset(0, 48)
 teamColumns.Size = UDim2.new(1, 0, 0, 318)
 teamColumns.Parent = TeamsPage
 
-local reductionFrame = makeSection(teamColumns, "EGG REDUCTION", 0, 318)
+reductionFrame = makeSection(teamColumns, "EGG REDUCTION", 0, 318)
 reductionFrame.Size = UDim2.new(0.5, -3, 1, 0)
 
-local reductionDescription = Instance.new("TextLabel")
+reductionDescription = Instance.new("TextLabel")
 reductionDescription.BackgroundTransparency = 1
 reductionDescription.Position = UDim2.fromOffset(8, 22)
 reductionDescription.Size = UDim2.new(1, -16, 0, 16)
@@ -3042,7 +3067,7 @@ reductionDescription.TextSize = 7
 reductionDescription.TextXAlignment = Enum.TextXAlignment.Left
 reductionDescription.Parent = reductionFrame
 
-local reductionSelect = Instance.new("TextButton")
+reductionSelect = Instance.new("TextButton")
 reductionSelect.Size = UDim2.new(0.62, -10, 0, 22)
 reductionSelect.Position = UDim2.fromOffset(8, 42)
 reductionSelect.BackgroundColor3 = Color3.fromRGB(38, 30, 48)
@@ -3054,7 +3079,7 @@ reductionSelect.TextSize = 7
 reductionSelect.Parent = reductionFrame
 Instance.new("UICorner", reductionSelect).CornerRadius = UDim.new(0, 6)
 
-local reductionEquip = Instance.new("TextButton")
+reductionEquip = Instance.new("TextButton")
 reductionEquip.Size = UDim2.new(0.38, -10, 0, 22)
 reductionEquip.Position = UDim2.new(0.62, 2, 0, 42)
 reductionEquip.BackgroundColor3 = Color3.fromRGB(38, 30, 48)
@@ -3066,7 +3091,7 @@ reductionEquip.TextSize = 7
 reductionEquip.Parent = reductionFrame
 Instance.new("UICorner", reductionEquip).CornerRadius = UDim.new(0, 6)
 
-local reductionLiveTitle = Instance.new("TextLabel")
+reductionLiveTitle = Instance.new("TextLabel")
 reductionLiveTitle.BackgroundTransparency = 1
 reductionLiveTitle.Position = UDim2.fromOffset(8, 70)
 reductionLiveTitle.Size = UDim2.new(1, -16, 0, 16)
@@ -3077,7 +3102,7 @@ reductionLiveTitle.TextSize = 7
 reductionLiveTitle.TextXAlignment = Enum.TextXAlignment.Left
 reductionLiveTitle.Parent = reductionFrame
 
-local reductionRows = {}
+reductionRows = {}
 for i = 1, CONFIG.TEAM_SLOTS do
     local row = Instance.new("TextLabel")
     row.BackgroundTransparency = 1
@@ -3094,11 +3119,11 @@ for i = 1, CONFIG.TEAM_SLOTS do
     reductionRows[i] = row
 end
 
-local koiFrame = makeSection(teamColumns, "KOI / RUBY", 0, 318)
+koiFrame = makeSection(teamColumns, "KOI / RUBY", 0, 318)
 koiFrame.Position = UDim2.new(0.5, 3, 0, 0)
 koiFrame.Size = UDim2.new(0.5, -3, 1, 0)
 
-local koiDescription = Instance.new("TextLabel")
+koiDescription = Instance.new("TextLabel")
 koiDescription.BackgroundTransparency = 1
 koiDescription.Position = UDim2.fromOffset(8, 22)
 koiDescription.Size = UDim2.new(1, -16, 0, 16)
@@ -3109,7 +3134,7 @@ koiDescription.TextSize = 7
 koiDescription.TextXAlignment = Enum.TextXAlignment.Left
 koiDescription.Parent = koiFrame
 
-local koiSelect = Instance.new("TextButton")
+koiSelect = Instance.new("TextButton")
 koiSelect.Size = UDim2.new(0.62, -10, 0, 22)
 koiSelect.Position = UDim2.fromOffset(8, 42)
 koiSelect.BackgroundColor3 = Color3.fromRGB(38, 30, 48)
@@ -3121,7 +3146,7 @@ koiSelect.TextSize = 7
 koiSelect.Parent = koiFrame
 Instance.new("UICorner", koiSelect).CornerRadius = UDim.new(0, 6)
 
-local koiEquip = Instance.new("TextButton")
+koiEquip = Instance.new("TextButton")
 koiEquip.Size = UDim2.new(0.38, -10, 0, 22)
 koiEquip.Position = UDim2.new(0.62, 2, 0, 42)
 koiEquip.BackgroundColor3 = Color3.fromRGB(38, 30, 48)
@@ -3133,7 +3158,7 @@ koiEquip.TextSize = 7
 koiEquip.Parent = koiFrame
 Instance.new("UICorner", koiEquip).CornerRadius = UDim.new(0, 6)
 
-local koiLiveTitle = Instance.new("TextLabel")
+koiLiveTitle = Instance.new("TextLabel")
 koiLiveTitle.BackgroundTransparency = 1
 koiLiveTitle.Position = UDim2.fromOffset(8, 70)
 koiLiveTitle.Size = UDim2.new(1, -16, 0, 16)
@@ -3144,7 +3169,7 @@ koiLiveTitle.TextSize = 7
 koiLiveTitle.TextXAlignment = Enum.TextXAlignment.Left
 koiLiveTitle.Parent = koiFrame
 
-local koiRows = {}
+koiRows = {}
 for i = 1, CONFIG.TEAM_SLOTS do
     local row = Instance.new("TextLabel")
     row.BackgroundTransparency = 1
@@ -3161,9 +3186,9 @@ for i = 1, CONFIG.TEAM_SLOTS do
     koiRows[i] = row
 end
 
-local teamStatus = makeSection(TeamsPage, "LIVE TEAM", 372, 42)
+teamStatus = makeSection(TeamsPage, "LIVE TEAM", 372, 42)
 
-local teamStatusLabel = Instance.new("TextLabel")
+teamStatusLabel = Instance.new("TextLabel")
 teamStatusLabel.BackgroundTransparency = 1
 teamStatusLabel.Position = UDim2.fromOffset(8, 18)
 teamStatusLabel.Size = UDim2.new(1, -16, 0, 18)
@@ -3174,7 +3199,7 @@ teamStatusLabel.TextSize = 7
 teamStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 teamStatusLabel.Parent = teamStatus
 
-local function getLiveSelectedTeam(team, fallbackBuilder)
+function getLiveSelectedTeam(team, fallbackBuilder)
     if type(team) == "table" and #team > 0 then
         return team
     end
@@ -3187,7 +3212,7 @@ local function getLiveSelectedTeam(team, fallbackBuilder)
     return {}
 end
 
-local function updateCompactSelectedRows(rows, titleLabel, team, fallbackBuilder, data)
+function updateCompactSelectedRows(rows, titleLabel, team, fallbackBuilder, data)
     local inventory = getPetInventory(data)
     local liveTeam = getLiveSelectedTeam(team, fallbackBuilder)
 
@@ -3238,13 +3263,13 @@ local function updateCompactSelectedRows(rows, titleLabel, team, fallbackBuilder
     end
 end
 
-local function selectAllDetectedReductionPets()
+function selectAllDetectedReductionPets()
     State.reductionTeam = buildReductionTeam()
     State.lastStatus = string.format("✅ Reduction selected: %d/8", #State.reductionTeam)
     updateTeamPage()
 end
 
-local function selectAllDetectedKoiPets()
+function selectAllDetectedKoiPets()
     State.koiTeam = buildKoiTeam()
     State.lastStatus = string.format("✅ Koi/Ruby selected: %d/8", #State.koiTeam)
     updateTeamPage()
@@ -3276,28 +3301,28 @@ koiEquip.Activated:Connect(function()
 end)
 
 -- Settings page.
-local settingsHeader = makeSection(
+settingsHeader = makeSection(
     SettingsPage,
     "V52-STYLE SETTINGS • FIXED TRANSFER TARGETS",
     0,
     30
 )
 
-local settingsContent = Instance.new("Frame")
+settingsContent = Instance.new("Frame")
 settingsContent.BackgroundTransparency = 1
 settingsContent.Position = UDim2.fromOffset(0, 36)
 settingsContent.Size = UDim2.new(1, 0, 1, -36)
 settingsContent.Parent = SettingsPage
 
-local function makeGridToggle(parent, x, y, width, labelText, defaultValue, callback)
+function makeGridToggle(parent, x, y, width, labelText, defaultValue, callback)
     local control = makeToggle(parent, y, labelText, defaultValue, callback)
     control.Button.Position = UDim2.fromOffset(x, y)
     control.Button.Size = UDim2.fromOffset(width, 28)
     return control
 end
 
-local gap = 6
-local halfWidth = math.floor((360 - gap) / 2)
+gap = 6
+halfWidth = math.floor((360 - gap) / 2)
 
 makeGridToggle(settingsContent, 0, 0, halfWidth, "Fast Egg Placement", CONFIG.FAST_PLACEMENT, function(v) CONFIG.FAST_PLACEMENT = v end)
 makeGridToggle(settingsContent, halfWidth + gap, 0, halfWidth, "Middle Eggs", CONFIG.MIDDLE_EGGS, function(v) CONFIG.MIDDLE_EGGS = v end)
@@ -3305,7 +3330,7 @@ makeGridToggle(settingsContent, 0, 32, halfWidth, "Overdrive Mode", CONFIG.OVERD
 makeGridToggle(settingsContent, halfWidth + gap, 32, halfWidth, "Ultra Mode", CONFIG.ULTRA, function(v) CONFIG.ULTRA = v end)
 
 makeGridToggle(settingsContent, 0, 64, halfWidth, "Rapid Gift → mysto_sailor", true, function(v) State.autoGiftEnabled = v end)
-local tradeTeamsToggle
+tradeTeamsToggle = nil
 tradeTeamsToggle = makeGridToggle(settingsContent, halfWidth + gap, 64, halfWidth, "Trade Pet Teams", true, function(_v)
     State.tradePetTeamsEnabled = true
     if tradeTeamsToggle then
@@ -3313,14 +3338,14 @@ tradeTeamsToggle = makeGridToggle(settingsContent, halfWidth + gap, 64, halfWidt
     end
 end)
 
-local tradeAcceptToggle
+tradeAcceptToggle = nil
 tradeAcceptToggle = makeGridToggle(settingsContent, 0, 96, halfWidth, "Accept Ticket → arimabns", true, function(_v)
     if tradeAcceptToggle then
         tradeAcceptToggle:Set(true, false)
     end
 end)
 
-local autoSlotToggle = makeGridToggle(settingsContent, halfWidth + gap, 96, halfWidth, "Auto Pet Slot", State.autoPetSlotEnabled, function(v)
+autoSlotToggle = makeGridToggle(settingsContent, halfWidth + gap, 96, halfWidth, "Auto Pet Slot", State.autoPetSlotEnabled, function(v)
     State.autoPetSlotEnabled = v
     if v and State.enabled and not State.autoSlotBusy then startAutoPetSlot() end
 end)
@@ -3334,14 +3359,14 @@ makeGridToggle(settingsContent, 0, 160, halfWidth, "Auto Assign Pet Teams", Stat
     updateTeamPage()
 end)
 
-local favToggle
+favToggle = nil
 favToggle = makeGridToggle(settingsContent, halfWidth + gap, 160, halfWidth, "Auto Favorite Hatch", false, function(_v)
     if favToggle then
         favToggle:Set(false, false)
     end
 end)
 
-local antiIdleToggle = makeGridToggle(
+antiIdleToggle = makeGridToggle(
     settingsContent, 0, 192, halfWidth,
     "Anti Kick / Idle", true,
     function(value)
@@ -3354,7 +3379,7 @@ local antiIdleToggle = makeGridToggle(
     end
 )
 
-local targetInfo = Instance.new("TextLabel")
+targetInfo = Instance.new("TextLabel")
 targetInfo.BackgroundTransparency = 1
 targetInfo.Position = UDim2.fromOffset(4, 226)
 targetInfo.Size = UDim2.new(1, -8, 0, 28)
@@ -3365,7 +3390,7 @@ targetInfo.TextSize = 8
 targetInfo.TextXAlignment = Enum.TextXAlignment.Center
 targetInfo.Parent = settingsContent
 
-local capacityInfo = Instance.new("TextLabel")
+capacityInfo = Instance.new("TextLabel")
 capacityInfo.BackgroundTransparency = 1
 capacityInfo.Position = UDim2.fromOffset(4, 252)
 capacityInfo.Size = UDim2.new(1, -8, 0, 28)
@@ -3376,7 +3401,7 @@ capacityInfo.TextSize = 8
 capacityInfo.TextXAlignment = Enum.TextXAlignment.Center
 capacityInfo.Parent = settingsContent
 
-local function showPage(name)
+function showPage(name)
     for pageName, page in pairs(Pages) do
         page.Visible = pageName == name
     end
@@ -3422,9 +3447,9 @@ for name, button in pairs(TabButtons) do
 end
 
 -- Drag support.
-local dragging = false
-local dragStart
-local startPos
+dragging = false
+dragStart = nil
+startPos = nil
 
 Connections.dragStart = Header.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -3465,14 +3490,14 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V11_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V11_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V13_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V13_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
 end)
 
-local function petNameFromUUID(uuid)
+function petNameFromUUID(uuid)
     local inventory = getPetInventory(getData())
     local entry = inventory and inventory[uuid]
     if entry then
@@ -3529,7 +3554,7 @@ updateTeamPage = function()
     end
 end
 
-local function updateUI()
+function updateUI()
     if not ScreenGui.Parent then
         return
     end
@@ -3573,7 +3598,7 @@ end)
 -- SHUTDOWN / CLEANUP
 ---------------------------------------------------------------------
 
-local function cleanup()
+function cleanup()
     State.shuttingDown = true
     State.enabled = false
     State.antiIdleEnabled = false
@@ -3621,13 +3646,13 @@ local function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V11 = nil
+        getgenv().FABLE_TRANSFER_V13 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V11_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V13_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -3807,4 +3832,4 @@ pcall(refreshAutoAssignedTeams)
 State.lastStatus = "Auto Hatch is OFF."
 statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V11] Loaded — Auto Hatch OFF. V52 status board/UI/trade mechanics copied; anti-idle enabled; Rapid Gift locked to mysto_sailor; no pet selling.")
+print("[FABLE TRANSFER V13] Loaded — Auto Hatch OFF. V52 status board/UI/trade mechanics copied; anti-idle enabled; Rapid Gift locked to mysto_sailor; no pet selling.")
