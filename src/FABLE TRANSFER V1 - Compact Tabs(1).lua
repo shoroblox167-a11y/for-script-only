@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V28
+    FABLE TRANSFER V29
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -58,7 +58,7 @@
 -- while a pet is temporarily absent, so the same team catches up when it
 -- returns to the inventory.
 TransferHttpService = game:GetService("HttpService")
-TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V28_STATE.json"
+TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V29_STATE.json"
 PersistentTransferConfig = {
     enabled = false,
     autoGiftEnabled = true,
@@ -76,6 +76,7 @@ function transferLoadPersistentState()
 
     if not isfile(configFileToRead) then
         for _, legacyFile in ipairs({
+            "FABLE_TRANSFER_V28_STATE.json",
             "FABLE_TRANSFER_V27_STATE.json",
             "FABLE_TRANSFER_V22_STATE.json",
             "FABLE_TRANSFER_V21_STATE.json",
@@ -159,7 +160,7 @@ function transferSavePersistentState()
     end
 
     local payload = {
-        version = 24,
+        version = 25,
         enabled = enabled == true,
         autoGiftEnabled = autoGiftEnabled == true,
         autoPetSlotEnabled = autoPetSlotEnabled == true,
@@ -195,6 +196,7 @@ transferLoadPersistentState()
 
 if getgenv then
     local previousStops = {
+        getgenv().FABLE_TRANSFER_V29_STOP,
         getgenv().FABLE_TRANSFER_V28_STOP,
         getgenv().FABLE_TRANSFER_V27_STOP,
         getgenv().FABLE_TRANSFER_V22_STOP,
@@ -212,8 +214,10 @@ if getgenv then
         end
     end
 
+    getgenv().FABLE_TRANSFER_V29 = nil
     getgenv().FABLE_TRANSFER_V28 = nil
     getgenv().FABLE_TRANSFER_V27 = nil
+    getgenv().FABLE_TRANSFER_V29_STOP = nil
     getgenv().FABLE_TRANSFER_V28_STOP = nil
     getgenv().FABLE_TRANSFER_V27_STOP = nil
     getgenv().FABLE_TRANSFER_V22 = nil
@@ -222,7 +226,7 @@ if getgenv then
     getgenv().FABLE_TRANSFER_V19_STOP = nil
     getgenv().FABLE_TRANSFER_V18 = nil
     getgenv().FABLE_TRANSFER_V18_STOP = nil
-    getgenv().FABLE_TRANSFER_V28 = true
+    getgenv().FABLE_TRANSFER_V29 = true
 end
 
 if not game:IsLoaded() then
@@ -238,18 +242,18 @@ VirtualUser = game:GetService("VirtualUser")
 
 LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
-    warn("[FABLE TRANSFER V28] LocalPlayer is not available.")
+    warn("[FABLE TRANSFER V29] LocalPlayer is not available.")
     if getgenv then
-        getgenv().FABLE_TRANSFER_V28 = nil
+        getgenv().FABLE_TRANSFER_V29 = nil
     end
     return
 end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V28] Unsupported game: " .. tostring(game.GameId))
+    warn("[FABLE TRANSFER V29] Unsupported game: " .. tostring(game.GameId))
     if getgenv then
-        getgenv().FABLE_TRANSFER_V28 = nil
+        getgenv().FABLE_TRANSFER_V29 = nil
     end
     return
 end
@@ -282,9 +286,9 @@ okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V28] Failed to require DataService.")
+    warn("[FABLE TRANSFER V29] Failed to require DataService.")
     if getgenv then
-        getgenv().FABLE_TRANSFER_V28 = nil
+        getgenv().FABLE_TRANSFER_V29 = nil
     end
     return
 end
@@ -293,9 +297,9 @@ okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V28] Failed to require PetGiftingService.")
+    warn("[FABLE TRANSFER V29] Failed to require PetGiftingService.")
     if getgenv then
-        getgenv().FABLE_TRANSFER_V28 = nil
+        getgenv().FABLE_TRANSFER_V29 = nil
     end
     return
 end
@@ -858,10 +862,37 @@ end
 ---------------------------------------------------------------------
 
 function getTeamSlotCapacity(data)
+    -- V52 reads the live ActivePetUI capacity.
+    -- Example title: "Active Pets: 0/8"
+    local ok, liveMax = pcall(function()
+        local playerGui = LocalPlayer:FindFirstChild("PlayerGui")
+        local activePetUI = playerGui and playerGui:FindFirstChild("ActivePetUI")
+        local frame = activePetUI and activePetUI:FindFirstChild("Frame")
+        local main = frame and frame:FindFirstChild("Main")
+        local holder = main and main:FindFirstChild("Holder")
+        local header = holder and holder:FindFirstChild("Header")
+        local title = header and header:FindFirstChild("Title")
+
+        if title and type(title.Text) == "string" then
+            local value = tonumber(string.match(title.Text, "/(%d+)"))
+            if value and value > 0 then
+                return value
+            end
+        end
+
+        return nil
+    end)
+
+    if ok and liveMax then
+        return math.min(CONFIG.TEAM_SLOTS, liveMax)
+    end
+
+    -- Fallback to the data value only when the live UI is unavailable.
     local accountMax = getMaxEquippedPets(data)
     if accountMax > 0 then
         return math.min(CONFIG.TEAM_SLOTS, accountMax)
     end
+
     return CONFIG.TEAM_SLOTS
 end
 
@@ -1298,7 +1329,7 @@ function unequipAllGardenPets()
         task.wait(0.2)
     end
 
-    warn("[FABLE TRANSFER V28] Timeout removing existing garden pets.")
+    warn("[FABLE TRANSFER V29] Timeout removing existing garden pets.")
     return false
 end
 
@@ -1442,7 +1473,7 @@ function equipGardenTeam(team, teamName)
 
         State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
-        warn("[FABLE TRANSFER V28] Timeout equipping " .. tostring(teamName) .. " team.")
+        warn("[FABLE TRANSFER V29] Timeout equipping " .. tostring(teamName) .. " team.")
         return false
     end
 
@@ -1450,7 +1481,7 @@ function equipGardenTeam(team, teamName)
     State.teamEquipBusy = false
 
     if not ok then
-        warn("[FABLE TRANSFER V28] Team equip error:", result)
+        warn("[FABLE TRANSFER V29] Team equip error:", result)
         State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
         return false
@@ -1506,6 +1537,8 @@ Threads.autoAssignTeams = task.spawn(function()
     end
 end)
 
+-- V29: dedicated UUID refresh so replacing a pet with another UUID is
+-- picked up automatically instead of waiting for a hatch/trade action.
 -- Restore the saved team arrays after DataService has become available.
 -- The saved UUIDs remain first; auto-assignment may append newly detected
 -- qualifying pets instead of replacing the remembered selection.
@@ -1783,7 +1816,7 @@ function placeNightEggsToMaxInternal()
     return placedAny or getFarmEggCount() >= userMaxEggs
 end
 
--- V27: Rapid Gift yields completely while egg placement owns the tool flow.
+-- Rapid Gift yields completely while egg placement owns the tool flow.
 function placeNightEggsToMax()
     if State.shuttingDown then
         return false
@@ -1808,7 +1841,7 @@ function placeNightEggsToMax()
 
     if not ok then
         State.lastStatus = "❌ Egg placement error • " .. tostring(result)
-        warn("[FABLE TRANSFER V28] Egg placement error:", result)
+        warn("[FABLE TRANSFER V29] Egg placement error:", result)
         return false
     end
 
@@ -2190,7 +2223,7 @@ function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V28] Gift error:", err)
+        warn("[FABLE TRANSFER V29] Gift error:", err)
     end
 
     State.autoGiftBusy = false
@@ -2644,6 +2677,9 @@ function handleArimabnsTrade()
         task.wait(0.05)
     end
 
+    -- Refresh before taking the restore snapshot so team changes are current.
+    pcall(refreshAutoAssignedTeams)
+
     local savedTeamName = State.currentGardenTeamName
     local savedTeam = table.clone(State.currentGardenTeam)
 
@@ -2708,6 +2744,9 @@ function handleArimabnsTrade()
         return false
     end
 
+    -- V29: refresh immediately before collecting trade UUIDs.
+    pcall(refreshAutoAssignedTeams)
+
     State.lastStatus = "🤝 Adding Transfer Pet Teams to arimabns..."
     pcall(addTradePetTeams)
 
@@ -2740,9 +2779,20 @@ function handleArimabnsTrade()
     State.acceptedArimabnsRequest = false
     State.lastTradeHandledAt = os.clock()
 
-    if savedTeamName and #savedTeam > 0 then
+    -- Re-read the teams before restoring. A pet may have been replaced
+    -- while the trade was open and therefore have a different UUID.
+    pcall(refreshAutoAssignedTeams)
+
+    local restoreTeam = savedTeam
+    if savedTeamName == "Reduction" and type(State.reductionTeam) == "table" and #State.reductionTeam > 0 then
+        restoreTeam = State.reductionTeam
+    elseif savedTeamName == "Koi" and type(State.koiTeam) == "table" and #State.koiTeam > 0 then
+        restoreTeam = State.koiTeam
+    end
+
+    if savedTeamName and type(restoreTeam) == "table" and #restoreTeam > 0 then
         pcall(function()
-            equipGardenTeam(savedTeam, savedTeamName)
+            equipGardenTeam(restoreTeam, savedTeamName)
         end)
     end
 
@@ -3149,7 +3199,7 @@ if staleV22UI then
     pcall(function() staleV22UI:Destroy() end)
 end
 
-oldUI = uiParent:FindFirstChild("FableTransferV28")
+oldUI = uiParent:FindFirstChild("FableTransferV29")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
@@ -3159,7 +3209,7 @@ end
 ScreenGui = nil
 okGui, guiErr = pcall(function()
     ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "FableTransferV28"
+    ScreenGui.Name = "FableTransferV29"
     ScreenGui.ResetOnSpawn = false
     ScreenGui.IgnoreGuiInset = true
     ScreenGui.DisplayOrder = 9999
@@ -3168,14 +3218,14 @@ okGui, guiErr = pcall(function()
 end)
 
 if not okGui or not ScreenGui then
-    warn("[FABLE TRANSFER V28] GUI creation failed: " .. tostring(guiErr))
+    warn("[FABLE TRANSFER V29] GUI creation failed: " .. tostring(guiErr))
     if getgenv then
-        getgenv().FABLE_TRANSFER_V28 = nil
+        getgenv().FABLE_TRANSFER_V29 = nil
     end
     return
 end
 
-print("[FABLE TRANSFER V28] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent V28 teams.")
+print("[FABLE TRANSFER V29] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent V29 teams.")
 
 Main = Instance.new("Frame")
 Main.Name = "Main"
@@ -3989,7 +4039,7 @@ Varz.StartHatchingSystem = function()
     -- the correct team before progressing.
     task.defer(prepareInitialHatchTeam)
 
-    print("[FABLE TRANSFER V28] Auto Hatch enabled.")
+    print("[FABLE TRANSFER V29] Auto Hatch enabled.")
     return true
 end
 
@@ -4004,7 +4054,7 @@ Varz.StopHatchingSystem = function()
     pcall(transferSavePersistentState)
     v20StatusNow()
 
-    print("[FABLE TRANSFER V28] Auto Hatch stopped.")
+    print("[FABLE TRANSFER V29] Auto Hatch stopped.")
     return true
 end
 
@@ -4246,7 +4296,7 @@ function updateCompactSelectedRows(rows, titleLabel, team, fallbackBuilder, data
     local liveTeam = getLiveSelectedTeam(team, fallbackBuilder)
 
     local shown = math.min(#liveTeam, CONFIG.TEAM_SLOTS)
-    titleLabel.Text = string.format("LIVE SELECTED %d/8", shown)
+    titleLabel.Text = string.format("LIVE SELECTED %d/%d", shown, getTeamSlotCapacity(data))
 
     for i = 1, CONFIG.TEAM_SLOTS do
         local uuid = liveTeam[i]
@@ -4551,8 +4601,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V28_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V28_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V29_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V29_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -4711,14 +4761,13 @@ function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V28 = nil
-    getgenv().FABLE_TRANSFER_V27 = nil
+        getgenv().FABLE_TRANSFER_V29 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V28_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V29_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -5004,4 +5053,4 @@ else
 end
 statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V28] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent V28 teams.")
+print("[FABLE TRANSFER V29] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent V29 teams.")
