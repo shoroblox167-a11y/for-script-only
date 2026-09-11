@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V27 FIXED
+    FABLE TRANSFER V28
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -58,8 +58,7 @@
 -- while a pet is temporarily absent, so the same team catches up when it
 -- returns to the inventory.
 TransferHttpService = game:GetService("HttpService")
-TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V27_STATE.json"
-TRANSFER_TEAMS_FILE = "FABLE_TRANSFER_V27_TEAMS.json"
+TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V28_STATE.json"
 PersistentTransferConfig = {
     enabled = false,
     autoGiftEnabled = true,
@@ -77,6 +76,7 @@ function transferLoadPersistentState()
 
     if not isfile(configFileToRead) then
         for _, legacyFile in ipairs({
+            "FABLE_TRANSFER_V27_STATE.json",
             "FABLE_TRANSFER_V22_STATE.json",
             "FABLE_TRANSFER_V21_STATE.json",
             "FABLE_TRANSFER_V20_STATE.json",
@@ -129,26 +129,6 @@ function transferLoadPersistentState()
         PersistentTransferConfig.koiTeam = table.clone(decoded.koiTeam)
     end
 
-    -- Team selections have their own persistence file. Load it after the
-    -- general state so an older/stale instance cannot replace remembered teams.
-    if isfile(TRANSFER_TEAMS_FILE) then
-        local teamOK, teamRaw = pcall(readfile, TRANSFER_TEAMS_FILE)
-        if teamOK and type(teamRaw) == "string" and teamRaw ~= "" then
-            local teamDecodedOK, teamDecoded = pcall(function()
-                return TransferHttpService:JSONDecode(teamRaw)
-            end)
-
-            if teamDecodedOK and type(teamDecoded) == "table" then
-                if type(teamDecoded.reductionTeam) == "table" then
-                    PersistentTransferConfig.reductionTeam = table.clone(teamDecoded.reductionTeam)
-                end
-                if type(teamDecoded.koiTeam) == "table" then
-                    PersistentTransferConfig.koiTeam = table.clone(teamDecoded.koiTeam)
-                end
-            end
-        end
-    end
-
     -- First successful migration writes the new V20 file immediately.
     if configFileToRead ~= TRANSFER_CONFIG_FILE and writefile then
         pcall(function()
@@ -179,7 +159,7 @@ function transferSavePersistentState()
     end
 
     local payload = {
-        version = 23,
+        version = 24,
         enabled = enabled == true,
         autoGiftEnabled = autoGiftEnabled == true,
         autoPetSlotEnabled = autoPetSlotEnabled == true,
@@ -199,18 +179,7 @@ function transferSavePersistentState()
         writefile(TRANSFER_CONFIG_FILE, json)
     end)
 
-    local teamPayload = {
-        version = 1,
-        reductionTeam = table.clone(payload.reductionTeam),
-        koiTeam = table.clone(payload.koiTeam),
-    }
-
-    local teamWriteOK = pcall(function()
-        local teamJSON = TransferHttpService:JSONEncode(teamPayload)
-        writefile(TRANSFER_TEAMS_FILE, teamJSON)
-    end)
-
-    if writeOK or teamWriteOK then
+    if writeOK then
         PersistentTransferConfig.enabled = payload.enabled
         PersistentTransferConfig.autoGiftEnabled = payload.autoGiftEnabled
         PersistentTransferConfig.autoPetSlotEnabled = payload.autoPetSlotEnabled
@@ -219,18 +188,14 @@ function transferSavePersistentState()
         PersistentTransferConfig.koiTeam = table.clone(payload.koiTeam)
     end
 
-    return writeOK or teamWriteOK
+    return writeOK
 end
 
 transferLoadPersistentState()
 
--- Snapshot the remembered team selections before any live inventory
--- reconciliation occurs. The saved UUID order remains authoritative.
-PersistentTransferConfig.reductionTeam = table.clone(PersistentTransferConfig.reductionTeam or {})
-PersistentTransferConfig.koiTeam = table.clone(PersistentTransferConfig.koiTeam or {})
-
 if getgenv then
     local previousStops = {
+        getgenv().FABLE_TRANSFER_V28_STOP,
         getgenv().FABLE_TRANSFER_V27_STOP,
         getgenv().FABLE_TRANSFER_V22_STOP,
         getgenv().FABLE_TRANSFER_V19_STOP,
@@ -247,7 +212,9 @@ if getgenv then
         end
     end
 
+    getgenv().FABLE_TRANSFER_V28 = nil
     getgenv().FABLE_TRANSFER_V27 = nil
+    getgenv().FABLE_TRANSFER_V28_STOP = nil
     getgenv().FABLE_TRANSFER_V27_STOP = nil
     getgenv().FABLE_TRANSFER_V22 = nil
     getgenv().FABLE_TRANSFER_V22_STOP = nil
@@ -255,7 +222,7 @@ if getgenv then
     getgenv().FABLE_TRANSFER_V19_STOP = nil
     getgenv().FABLE_TRANSFER_V18 = nil
     getgenv().FABLE_TRANSFER_V18_STOP = nil
-    getgenv().FABLE_TRANSFER_V27 = true
+    getgenv().FABLE_TRANSFER_V28 = true
 end
 
 if not game:IsLoaded() then
@@ -271,41 +238,21 @@ VirtualUser = game:GetService("VirtualUser")
 
 LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
-    warn("[FABLE TRANSFER V27] LocalPlayer is not available.")
-    if getgenv then getgenv().FABLE_TRANSFER_V27 = nil end
+    warn("[FABLE TRANSFER V28] LocalPlayer is not available.")
+    if getgenv then
+        getgenv().FABLE_TRANSFER_V28 = nil
+    end
     return
 end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V27] Unsupported game: " .. tostring(game.GameId))
-    if getgenv then getgenv().FABLE_TRANSFER_V27 = nil end
+    warn("[FABLE TRANSFER V28] Unsupported game: " .. tostring(game.GameId))
+    if getgenv then
+        getgenv().FABLE_TRANSFER_V28 = nil
+    end
     return
 end
-
--- One startup click prevents the client from remaining on a click-to-start
--- loading screen. It fires once only.
-task.defer(function()
-    task.wait(0.25)
-
-    if type(mouse1click) == "function" then
-        pcall(function()
-            mouse1click()
-        end)
-        return
-    end
-
-    pcall(function()
-        local camera = workspace.CurrentCamera
-        local position = camera and (camera.ViewportSize / 2) or Vector2.new(400, 300)
-        local cf = camera and camera.CFrame or CFrame.new()
-
-        VirtualUser:CaptureController()
-        VirtualUser:Button1Down(position, cf)
-        task.wait()
-        VirtualUser:Button1Up(position, cf)
-    end)
-end)
 
 ---------------------------------------------------------------------
 -- SERVICES / MODULES
@@ -335,8 +282,10 @@ okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V27] Failed to require DataService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V27 = nil end
+    warn("[FABLE TRANSFER V28] Failed to require DataService.")
+    if getgenv then
+        getgenv().FABLE_TRANSFER_V28 = nil
+    end
     return
 end
 
@@ -344,8 +293,10 @@ okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V27] Failed to require PetGiftingService.")
-    if getgenv then getgenv().FABLE_TRANSFER_V27 = nil end
+    warn("[FABLE TRANSFER V28] Failed to require PetGiftingService.")
+    if getgenv then
+        getgenv().FABLE_TRANSFER_V28 = nil
+    end
     return
 end
 
@@ -1007,7 +958,8 @@ end
 -- V23 called refreshAutoAssignedTeams(), but the function was missing.
 -- That is the exact nil-call shown by the user's console at line 3513.
 --
--- Saved UUIDs stay authoritative. Auto-assign only fills free slots.
+-- Existing UUIDs are kept when still present. Replaced/missing UUIDs are
+-- discarded and auto-assignment fills the freed slots from current inventory.
 ---------------------------------------------------------------------
 function refreshAutoAssignedTeams()
     local data = getData()
@@ -1022,6 +974,14 @@ function refreshAutoAssignedTeams()
         State.koiTeam = {}
     end
 
+    local inventory = getPetInventory(data)
+
+    -- Do not modify saved teams while the inventory data is still empty.
+    -- This prevents a reconnect/startup race from erasing the saved config.
+    if type(inventory) ~= "table" or next(inventory) == nil then
+        return false
+    end
+
     local maxPets = getTeamSlotCapacity(data)
     if maxPets <= 0 then
         maxPets = CONFIG.TEAM_SLOTS
@@ -1029,13 +989,17 @@ function refreshAutoAssignedTeams()
 
     local changed = false
 
-    local function normalize(team)
+    local function normalizeAndKeepExisting(team)
         local result = {}
         local seen = {}
 
         for _, rawUUID in ipairs(team) do
             local uuid = tostring(rawUUID)
-            if uuid ~= "" and not seen[uuid] then
+
+            -- Keep only UUIDs that still exist in the current inventory.
+            -- A replaced pet gets a new UUID, so its old UUID must not
+            -- continue consuming one of the available team slots.
+            if uuid ~= "" and not seen[uuid] and inventory[uuid] then
                 seen[uuid] = true
                 table.insert(result, uuid)
             else
@@ -1046,40 +1010,61 @@ function refreshAutoAssignedTeams()
         return result
     end
 
-    -- The remembered arrays are kept exactly in their saved order.
-    -- Inventory reconciliation may append new qualifying pets, but it does
-    -- not replace the saved selections just because a pet is temporarily
-    -- absent during reconnect/loading.
-    State.reductionTeam = normalize(State.reductionTeam)
-    State.koiTeam = normalize(State.koiTeam)
+    State.reductionTeam = normalizeAndKeepExisting(State.reductionTeam)
+    State.koiTeam = normalizeAndKeepExisting(State.koiTeam)
 
     -- A UUID can belong to only one transfer team.
-    local reductionSet = {}
+    local used = {}
+
     for _, uuid in ipairs(State.reductionTeam) do
-        reductionSet[uuid] = true
+        used[tostring(uuid)] = true
     end
 
-    local filteredKoi = {}
-    local koiSeen = {}
     for _, uuid in ipairs(State.koiTeam) do
-        if not reductionSet[uuid] and not koiSeen[uuid] then
-            koiSeen[uuid] = true
-            table.insert(filteredKoi, uuid)
-        else
+        local key = tostring(uuid)
+        if used[key] then
             changed = true
+        else
+            used[key] = true
         end
     end
-    State.koiTeam = filteredKoi
+
+    -- Remove any duplicate Koi-team UUID that also exists in Reduction.
+    do
+        local filtered = {}
+        local seen = {}
+
+        for _, uuid in ipairs(State.koiTeam) do
+            local key = tostring(uuid)
+            if not seen[key] and not (
+                (function()
+                    for _, reductionUUID in ipairs(State.reductionTeam) do
+                        if tostring(reductionUUID) == key then
+                            return true
+                        end
+                    end
+                    return false
+                end)()
+            ) then
+                seen[key] = true
+                table.insert(filtered, key)
+            else
+                changed = true
+            end
+        end
+
+        State.koiTeam = filtered
+    end
 
     if State.autoAssignTeamsEnabled then
-        local inventory = getPetInventory(data)
-        local used = {}
+        -- Rebuild the used set after stale/duplicate cleanup.
+        used = {}
 
         for _, uuid in ipairs(State.reductionTeam) do
-            used[uuid] = true
+            used[tostring(uuid)] = true
         end
         for _, uuid in ipairs(State.koiTeam) do
-            used[uuid] = true
+            used[tostring(uuid)] = true
         end
 
         local function append(team, allowed)
@@ -1095,7 +1080,7 @@ function refreshAutoAssignedTeams()
                 end
 
                 local uuid = tostring(match.uuid)
-                if uuid ~= "" and not used[uuid] then
+                if uuid ~= "" and inventory[uuid] and not used[uuid] then
                     used[uuid] = true
                     table.insert(team, uuid)
                     changed = true
@@ -1109,8 +1094,18 @@ function refreshAutoAssignedTeams()
             ["Mimic Octopus"] = true,
         })
 
-        -- Preserve the requested Koi pattern: one Koi first, then Ruby Squid.
-        if #State.koiTeam == 0 then
+        -- Koi team must always prefer one live Koi.
+        -- If the saved Koi UUID was replaced, find a new Koi UUID.
+        local koiIndex = nil
+        for index, uuid in ipairs(State.koiTeam) do
+            local entry = inventory[uuid]
+            if entry and entry.PetType == "Koi" then
+                koiIndex = index
+                break
+            end
+        end
+
+        if not koiIndex and #State.koiTeam < maxPets then
             local koiCandidates = collectUUIDsByPetNames(inventory, {
                 ["Koi"] = true,
             })
@@ -1118,9 +1113,18 @@ function refreshAutoAssignedTeams()
             for _, match in ipairs(koiCandidates) do
                 local uuid = tostring(match.uuid)
                 if uuid ~= "" and not used[uuid] then
+                    if #State.koiTeam > 0 then
+                        -- Replace the first stale/non-Koi slot with the Koi.
+                        local oldUUID = State.koiTeam[1]
+                        used[tostring(oldUUID)] = nil
+                        State.koiTeam[1] = uuid
+                    else
+                        table.insert(State.koiTeam, uuid)
+                    end
+
                     used[uuid] = true
-                    table.insert(State.koiTeam, uuid)
                     changed = true
+                    koiIndex = 1
                     break
                 end
             end
@@ -1132,6 +1136,8 @@ function refreshAutoAssignedTeams()
     end
 
     if changed then
+        -- Save every team change immediately so a reconnect keeps the
+        -- current UUID assignments.
         pcall(transferSavePersistentState)
     end
 
@@ -1292,7 +1298,7 @@ function unequipAllGardenPets()
         task.wait(0.2)
     end
 
-    warn("[FABLE TRANSFER V27] Timeout removing existing garden pets.")
+    warn("[FABLE TRANSFER V28] Timeout removing existing garden pets.")
     return false
 end
 
@@ -1436,7 +1442,7 @@ function equipGardenTeam(team, teamName)
 
         State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
-        warn("[FABLE TRANSFER V27] Timeout equipping " .. tostring(teamName) .. " team.")
+        warn("[FABLE TRANSFER V28] Timeout equipping " .. tostring(teamName) .. " team.")
         return false
     end
 
@@ -1444,7 +1450,7 @@ function equipGardenTeam(team, teamName)
     State.teamEquipBusy = false
 
     if not ok then
-        warn("[FABLE TRANSFER V27] Team equip error:", result)
+        warn("[FABLE TRANSFER V28] Team equip error:", result)
         State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
         return false
@@ -1802,7 +1808,7 @@ function placeNightEggsToMax()
 
     if not ok then
         State.lastStatus = "❌ Egg placement error • " .. tostring(result)
-        warn("[FABLE TRANSFER V27] Egg placement error:", result)
+        warn("[FABLE TRANSFER V28] Egg placement error:", result)
         return false
     end
 
@@ -2184,7 +2190,7 @@ function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V27] Gift error:", err)
+        warn("[FABLE TRANSFER V28] Gift error:", err)
     end
 
     State.autoGiftBusy = false
@@ -2596,72 +2602,28 @@ function getTradeTeamUUIDs()
     return result
 end
 
--- V52 Trade Pet Teams: add the assigned team pets to the active trade
--- directly by UUID, with short retries while the trade UI is live.
+-- V52 Trade Pet Teams: add the assigned team pets to the active trade,
+-- one by one, checking for the live inventory tool before AddItem.
 function addTradePetTeams()
-    local teamUUIDs = getTradeTeamUUIDs()
-    if #teamUUIDs == 0 or myTradeItemCount() >= 12 then
-        return false
+    if myTradeItemCount() >= 12 then
+        return
     end
 
-    -- Use the same proven V52 path: AddItem receives the pet UUID directly.
-    -- Do not require the pet Tool to be visible in Backpack/Character; that
-    -- visibility can lag immediately after the trade UI opens.
-    local attempts = {}
-    local changed = false
-    local deadline = os.clock() + 5
-
-    while isTradeUIActive()
-        and isActiveTradeArimabns()
-        and os.clock() < deadline
-        and myTradeItemCount() < 12
-    do
-        local progressThisPass = false
-
-        for _, uuid in ipairs(teamUUIDs) do
-            if myTradeItemCount() >= 12 or os.clock() >= deadline then
-                break
-            end
-
-            attempts[uuid] = attempts[uuid] or 0
-            if attempts[uuid] < 3 then
-                attempts[uuid] += 1
-
-                local before = myTradeItemCount()
-                pcall(function()
-                    AddItemRemote:FireServer("Pet", uuid)
-                end)
-
-                task.wait(0.12)
-
-                local after = myTradeItemCount()
-                if after > before then
-                    progressThisPass = true
-                    changed = true
-                end
-            end
-        end
-
+    for _, uuid in ipairs(getTradeTeamUUIDs()) do
         if myTradeItemCount() >= 12 then
             break
         end
 
-        local allTried = true
-        for _, uuid in ipairs(teamUUIDs) do
-            if (attempts[uuid] or 0) < 3 then
-                allTried = false
-                break
-            end
+        if not getToolByPetUUID(uuid) then
+            continue
         end
 
-        if allTried and not progressThisPass then
-            break
-        end
+        pcall(function()
+            AddItemRemote:FireServer("Pet", uuid)
+        end)
 
-        task.wait(0.08)
+        task.wait(0.1)
     end
-
-    return changed
 end
 
 -- Full V52-style arimabns trade lifecycle, specialized to this project:
@@ -2748,13 +2710,6 @@ function handleArimabnsTrade()
 
     State.lastStatus = "🤝 Adding Transfer Pet Teams to arimabns..."
     pcall(addTradePetTeams)
-
-    -- One final pass catches UI/server replication that arrives just after
-    -- the first AddItem calls.
-    if isTradeUIActive() and isActiveTradeArimabns() and myTradeItemCount() < 12 then
-        task.wait(0.15)
-        pcall(addTradePetTeams)
-    end
 
     -- V52: once the other player is ready, press the in-trade Accept.
     local confirmDeadline = os.clock() + 30
@@ -3194,7 +3149,7 @@ if staleV22UI then
     pcall(function() staleV22UI:Destroy() end)
 end
 
-oldUI = uiParent:FindFirstChild("FableTransferV27")
+oldUI = uiParent:FindFirstChild("FableTransferV28")
 if oldUI then
     pcall(function()
         oldUI:Destroy()
@@ -3204,7 +3159,7 @@ end
 ScreenGui = nil
 okGui, guiErr = pcall(function()
     ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "FableTransferV27"
+    ScreenGui.Name = "FableTransferV28"
     ScreenGui.ResetOnSpawn = false
     ScreenGui.IgnoreGuiInset = true
     ScreenGui.DisplayOrder = 9999
@@ -3213,12 +3168,14 @@ okGui, guiErr = pcall(function()
 end)
 
 if not okGui or not ScreenGui then
-    warn("[FABLE TRANSFER V27] GUI creation failed: " .. tostring(guiErr))
-    if getgenv then getgenv().FABLE_TRANSFER_V27 = nil end
+    warn("[FABLE TRANSFER V28] GUI creation failed: " .. tostring(guiErr))
+    if getgenv then
+        getgenv().FABLE_TRANSFER_V28 = nil
+    end
     return
 end
 
-print("[FABLE TRANSFER V27] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
+print("[FABLE TRANSFER V28] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent V28 teams.")
 
 Main = Instance.new("Frame")
 Main.Name = "Main"
@@ -4032,7 +3989,7 @@ Varz.StartHatchingSystem = function()
     -- the correct team before progressing.
     task.defer(prepareInitialHatchTeam)
 
-    print("[FABLE TRANSFER V27] Auto Hatch enabled.")
+    print("[FABLE TRANSFER V28] Auto Hatch enabled.")
     return true
 end
 
@@ -4047,7 +4004,7 @@ Varz.StopHatchingSystem = function()
     pcall(transferSavePersistentState)
     v20StatusNow()
 
-    print("[FABLE TRANSFER V27] Auto Hatch stopped.")
+    print("[FABLE TRANSFER V28] Auto Hatch stopped.")
     return true
 end
 
@@ -4337,6 +4294,8 @@ end
 
 function selectAllDetectedReductionPets()
     State.reductionTeam = buildReductionTeam()
+    -- Persist the exact UUID assignments immediately.
+    pcall(transferSavePersistentState)
     State.lastStatus = string.format("✅ Reduction selected: %d/8", #State.reductionTeam)
     pcall(transferSavePersistentState)
     pcall(statusPush, State.lastStatus)
@@ -4345,6 +4304,8 @@ end
 
 function selectAllDetectedKoiPets()
     State.koiTeam = buildKoiTeam()
+    -- Persist the exact UUID assignments immediately.
+    pcall(transferSavePersistentState)
     State.lastStatus = string.format("✅ Koi/Ruby selected: %d/8", #State.koiTeam)
     pcall(transferSavePersistentState)
     pcall(statusPush, State.lastStatus)
@@ -4590,8 +4551,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V27_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V27_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V28_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V28_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -4750,13 +4711,14 @@ function cleanup()
     end
 
     if getgenv then
-        getgenv().FABLE_TRANSFER_V27 = nil
+        getgenv().FABLE_TRANSFER_V28 = nil
+    getgenv().FABLE_TRANSFER_V27 = nil
     end
 end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V27_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V28_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -5042,4 +5004,4 @@ else
 end
 statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V27] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent teams.")
+print("[FABLE TRANSFER V28] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent V28 teams.")
