@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V27
+    FABLE TRANSFER V27 FIXED
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -59,6 +59,7 @@
 -- returns to the inventory.
 TransferHttpService = game:GetService("HttpService")
 TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V27_STATE.json"
+TRANSFER_TEAMS_FILE = "FABLE_TRANSFER_V27_TEAMS.json"
 PersistentTransferConfig = {
     enabled = false,
     autoGiftEnabled = true,
@@ -128,6 +129,26 @@ function transferLoadPersistentState()
         PersistentTransferConfig.koiTeam = table.clone(decoded.koiTeam)
     end
 
+    -- Team selections have their own persistence file. Load it after the
+    -- general state so an older/stale instance cannot replace remembered teams.
+    if isfile(TRANSFER_TEAMS_FILE) then
+        local teamOK, teamRaw = pcall(readfile, TRANSFER_TEAMS_FILE)
+        if teamOK and type(teamRaw) == "string" and teamRaw ~= "" then
+            local teamDecodedOK, teamDecoded = pcall(function()
+                return TransferHttpService:JSONDecode(teamRaw)
+            end)
+
+            if teamDecodedOK and type(teamDecoded) == "table" then
+                if type(teamDecoded.reductionTeam) == "table" then
+                    PersistentTransferConfig.reductionTeam = table.clone(teamDecoded.reductionTeam)
+                end
+                if type(teamDecoded.koiTeam) == "table" then
+                    PersistentTransferConfig.koiTeam = table.clone(teamDecoded.koiTeam)
+                end
+            end
+        end
+    end
+
     -- First successful migration writes the new V20 file immediately.
     if configFileToRead ~= TRANSFER_CONFIG_FILE and writefile then
         pcall(function()
@@ -178,7 +199,18 @@ function transferSavePersistentState()
         writefile(TRANSFER_CONFIG_FILE, json)
     end)
 
-    if writeOK then
+    local teamPayload = {
+        version = 1,
+        reductionTeam = table.clone(payload.reductionTeam),
+        koiTeam = table.clone(payload.koiTeam),
+    }
+
+    local teamWriteOK = pcall(function()
+        local teamJSON = TransferHttpService:JSONEncode(teamPayload)
+        writefile(TRANSFER_TEAMS_FILE, teamJSON)
+    end)
+
+    if writeOK or teamWriteOK then
         PersistentTransferConfig.enabled = payload.enabled
         PersistentTransferConfig.autoGiftEnabled = payload.autoGiftEnabled
         PersistentTransferConfig.autoPetSlotEnabled = payload.autoPetSlotEnabled
@@ -187,10 +219,15 @@ function transferSavePersistentState()
         PersistentTransferConfig.koiTeam = table.clone(payload.koiTeam)
     end
 
-    return writeOK
+    return writeOK or teamWriteOK
 end
 
 transferLoadPersistentState()
+
+-- Snapshot the remembered team selections before any live inventory
+-- reconciliation occurs. The saved UUID order remains authoritative.
+PersistentTransferConfig.reductionTeam = table.clone(PersistentTransferConfig.reductionTeam or {})
+PersistentTransferConfig.koiTeam = table.clone(PersistentTransferConfig.koiTeam or {})
 
 if getgenv then
     local previousStops = {
@@ -245,6 +282,30 @@ if tostring(game.GameId) ~= "7436755782" then
     if getgenv then getgenv().FABLE_TRANSFER_V27 = nil end
     return
 end
+
+-- One startup click prevents the client from remaining on a click-to-start
+-- loading screen. It fires once only.
+task.defer(function()
+    task.wait(0.25)
+
+    if type(mouse1click) == "function" then
+        pcall(function()
+            mouse1click()
+        end)
+        return
+    end
+
+    pcall(function()
+        local camera = workspace.CurrentCamera
+        local position = camera and (camera.ViewportSize / 2) or Vector2.new(400, 300)
+        local cf = camera and camera.CFrame or CFrame.new()
+
+        VirtualUser:CaptureController()
+        VirtualUser:Button1Down(position, cf)
+        task.wait()
+        VirtualUser:Button1Up(position, cf)
+    end)
+end)
 
 ---------------------------------------------------------------------
 -- SERVICES / MODULES
@@ -985,6 +1046,10 @@ function refreshAutoAssignedTeams()
         return result
     end
 
+    -- The remembered arrays are kept exactly in their saved order.
+    -- Inventory reconciliation may append new qualifying pets, but it does
+    -- not replace the saved selections just because a pet is temporarily
+    -- absent during reconnect/loading.
     State.reductionTeam = normalize(State.reductionTeam)
     State.koiTeam = normalize(State.koiTeam)
 
@@ -2531,28 +2596,72 @@ function getTradeTeamUUIDs()
     return result
 end
 
--- V52 Trade Pet Teams: add the assigned team pets to the active trade,
--- one by one, checking for the live inventory tool before AddItem.
+-- V52 Trade Pet Teams: add the assigned team pets to the active trade
+-- directly by UUID, with short retries while the trade UI is live.
 function addTradePetTeams()
-    if myTradeItemCount() >= 12 then
-        return
+    local teamUUIDs = getTradeTeamUUIDs()
+    if #teamUUIDs == 0 or myTradeItemCount() >= 12 then
+        return false
     end
 
-    for _, uuid in ipairs(getTradeTeamUUIDs()) do
+    -- Use the same proven V52 path: AddItem receives the pet UUID directly.
+    -- Do not require the pet Tool to be visible in Backpack/Character; that
+    -- visibility can lag immediately after the trade UI opens.
+    local attempts = {}
+    local changed = false
+    local deadline = os.clock() + 5
+
+    while isTradeUIActive()
+        and isActiveTradeArimabns()
+        and os.clock() < deadline
+        and myTradeItemCount() < 12
+    do
+        local progressThisPass = false
+
+        for _, uuid in ipairs(teamUUIDs) do
+            if myTradeItemCount() >= 12 or os.clock() >= deadline then
+                break
+            end
+
+            attempts[uuid] = attempts[uuid] or 0
+            if attempts[uuid] < 3 then
+                attempts[uuid] += 1
+
+                local before = myTradeItemCount()
+                pcall(function()
+                    AddItemRemote:FireServer("Pet", uuid)
+                end)
+
+                task.wait(0.12)
+
+                local after = myTradeItemCount()
+                if after > before then
+                    progressThisPass = true
+                    changed = true
+                end
+            end
+        end
+
         if myTradeItemCount() >= 12 then
             break
         end
 
-        if not getToolByPetUUID(uuid) then
-            continue
+        local allTried = true
+        for _, uuid in ipairs(teamUUIDs) do
+            if (attempts[uuid] or 0) < 3 then
+                allTried = false
+                break
+            end
         end
 
-        pcall(function()
-            AddItemRemote:FireServer("Pet", uuid)
-        end)
+        if allTried and not progressThisPass then
+            break
+        end
 
-        task.wait(0.1)
+        task.wait(0.08)
     end
+
+    return changed
 end
 
 -- Full V52-style arimabns trade lifecycle, specialized to this project:
@@ -2639,6 +2748,13 @@ function handleArimabnsTrade()
 
     State.lastStatus = "🤝 Adding Transfer Pet Teams to arimabns..."
     pcall(addTradePetTeams)
+
+    -- One final pass catches UI/server replication that arrives just after
+    -- the first AddItem calls.
+    if isTradeUIActive() and isActiveTradeArimabns() and myTradeItemCount() < 12 then
+        task.wait(0.15)
+        pcall(addTradePetTeams)
+    end
 
     -- V52: once the other player is ready, press the in-trade Accept.
     local confirmDeadline = os.clock() + 30
