@@ -2068,7 +2068,10 @@ function clickIncomingGiftAccept(giftPanel)
 end
 
 function autoAcceptAllIncomingGifts()
-    if State.shuttingDown or not State.enabled or not State.autoGiftAcceptEnabled then
+    -- Incoming gift acceptance is intentionally independent from the
+    -- Auto Hatch / Transfer toggle. It remains active whenever the
+    -- dedicated autoGiftAcceptEnabled setting is enabled.
+    if State.shuttingDown or not State.autoGiftAcceptEnabled then
         return 0
     end
 
@@ -2089,7 +2092,7 @@ function autoAcceptAllIncomingGifts()
 
     local accepted = 0
     for _, giftPanel in ipairs(frame:GetChildren()) do
-        if State.shuttingDown or not State.enabled or not State.autoGiftAcceptEnabled then
+        if State.shuttingDown or not State.autoGiftAcceptEnabled then
             break
         end
 
@@ -2109,7 +2112,8 @@ end
 
 Threads.autoGiftAccept = task.spawn(function()
     while not State.shuttingDown do
-        if State.enabled and State.autoGiftAcceptEnabled then
+        -- This watcher must continue even when Auto Hatch / Transfer is OFF.
+        if State.autoGiftAcceptEnabled then
             pcall(autoAcceptAllIncomingGifts)
         end
         task.wait(CONFIG.AUTO_GIFT_ACCEPT_INTERVAL)
