@@ -1,5 +1,5 @@
 --[[
-    FABLE TRANSFER V30
+    FABLE TRANSFER V31
 
     Dedicated egg-transfer automation.
     This script intentionally contains NO pet-selling system.
@@ -26,7 +26,7 @@
           Birb, Rainbow Birb, Mimic Octopus
       • Koi team:
           1 Koi + remaining slots filled with Ruby Squid
-      • Fast-gift every Night Egg pet to mysto_sailor
+      • Fast-gift every Night Egg pet to mysto_sailor1
         (existing pets count too; no freshness requirement)
       • Trade Pet Teams always enabled
       • Only auto-handle trade requests from arimabns
@@ -58,10 +58,11 @@
 -- while a pet is temporarily absent, so the same team catches up when it
 -- returns to the inventory.
 TransferHttpService = game:GetService("HttpService")
-TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V30_STATE.json"
+TRANSFER_CONFIG_FILE = "FABLE_TRANSFER_V31_STATE.json"
 PersistentTransferConfig = {
     enabled = false,
     autoGiftEnabled = true,
+    autoGiftAcceptEnabled = true,
     autoPetSlotEnabled = true,
     autoAssignTeamsEnabled = true,
     reductionTeam = {},
@@ -76,6 +77,7 @@ function transferLoadPersistentState()
 
     if not isfile(configFileToRead) then
         for _, legacyFile in ipairs({
+            "FABLE_TRANSFER_V30_STATE.json",
             "FABLE_TRANSFER_V29_STATE.json",
             "FABLE_TRANSFER_V28_STATE.json",
             "FABLE_TRANSFER_V27_STATE.json",
@@ -117,6 +119,9 @@ function transferLoadPersistentState()
     if decoded.autoGiftEnabled ~= nil then
         PersistentTransferConfig.autoGiftEnabled = decoded.autoGiftEnabled == true
     end
+    if decoded.autoGiftAcceptEnabled ~= nil then
+        PersistentTransferConfig.autoGiftAcceptEnabled = decoded.autoGiftAcceptEnabled == true
+    end
     if decoded.autoPetSlotEnabled ~= nil then
         PersistentTransferConfig.autoPetSlotEnabled = decoded.autoPetSlotEnabled == true
     end
@@ -146,6 +151,7 @@ function transferSavePersistentState()
 
     local enabled = PersistentTransferConfig.enabled
     local autoGiftEnabled = PersistentTransferConfig.autoGiftEnabled
+    local autoGiftAcceptEnabled = PersistentTransferConfig.autoGiftAcceptEnabled
     local autoPetSlotEnabled = PersistentTransferConfig.autoPetSlotEnabled
     local autoAssignTeamsEnabled = PersistentTransferConfig.autoAssignTeamsEnabled
     local reductionTeam = PersistentTransferConfig.reductionTeam
@@ -154,6 +160,7 @@ function transferSavePersistentState()
     if State then
         if State.enabled ~= nil then enabled = State.enabled end
         if State.autoGiftEnabled ~= nil then autoGiftEnabled = State.autoGiftEnabled end
+        if State.autoGiftAcceptEnabled ~= nil then autoGiftAcceptEnabled = State.autoGiftAcceptEnabled end
         if State.autoPetSlotEnabled ~= nil then autoPetSlotEnabled = State.autoPetSlotEnabled end
         if State.autoAssignTeamsEnabled ~= nil then autoAssignTeamsEnabled = State.autoAssignTeamsEnabled end
         if type(State.reductionTeam) == "table" then reductionTeam = State.reductionTeam end
@@ -164,6 +171,7 @@ function transferSavePersistentState()
         version = 26,
         enabled = enabled == true,
         autoGiftEnabled = autoGiftEnabled == true,
+        autoGiftAcceptEnabled = autoGiftAcceptEnabled == true,
         autoPetSlotEnabled = autoPetSlotEnabled == true,
         autoAssignTeamsEnabled = autoAssignTeamsEnabled == true,
         reductionTeam = table.clone(reductionTeam or {}),
@@ -184,6 +192,7 @@ function transferSavePersistentState()
     if writeOK then
         PersistentTransferConfig.enabled = payload.enabled
         PersistentTransferConfig.autoGiftEnabled = payload.autoGiftEnabled
+        PersistentTransferConfig.autoGiftAcceptEnabled = payload.autoGiftAcceptEnabled
         PersistentTransferConfig.autoPetSlotEnabled = payload.autoPetSlotEnabled
         PersistentTransferConfig.autoAssignTeamsEnabled = payload.autoAssignTeamsEnabled
         PersistentTransferConfig.reductionTeam = table.clone(payload.reductionTeam)
@@ -197,7 +206,7 @@ transferLoadPersistentState()
 
 if getgenv then
     local previousStops = {
-        getgenv().FABLE_TRANSFER_V30_STOP,
+        getgenv().FABLE_TRANSFER_V31_STOP,
         getgenv().FABLE_TRANSFER_V29_STOP,
         getgenv().FABLE_TRANSFER_V28_STOP,
         getgenv().FABLE_TRANSFER_V27_STOP,
@@ -216,11 +225,11 @@ if getgenv then
         end
     end
 
-    getgenv().FABLE_TRANSFER_V30 = nil
+    getgenv().FABLE_TRANSFER_V31 = nil
     getgenv().FABLE_TRANSFER_V29 = nil
     getgenv().FABLE_TRANSFER_V28 = nil
     getgenv().FABLE_TRANSFER_V27 = nil
-    getgenv().FABLE_TRANSFER_V30_STOP = nil
+    getgenv().FABLE_TRANSFER_V31_STOP = nil
     getgenv().FABLE_TRANSFER_V29_STOP = nil
     getgenv().FABLE_TRANSFER_V28_STOP = nil
     getgenv().FABLE_TRANSFER_V27_STOP = nil
@@ -230,7 +239,7 @@ if getgenv then
     getgenv().FABLE_TRANSFER_V19_STOP = nil
     getgenv().FABLE_TRANSFER_V18 = nil
     getgenv().FABLE_TRANSFER_V18_STOP = nil
-    getgenv().FABLE_TRANSFER_V30 = true
+    getgenv().FABLE_TRANSFER_V31 = true
 end
 
 if not game:IsLoaded() then
@@ -246,16 +255,16 @@ VirtualUser = game:GetService("VirtualUser")
 
 LocalPlayer = Players.LocalPlayer
 if not LocalPlayer then
-    warn("[FABLE TRANSFER V30] LocalPlayer is not available.")
+    warn("[FABLE TRANSFER V31] LocalPlayer is not available.")
     if getgenv then
-        getgenv().FABLE_TRANSFER_V30 = nil
+        getgenv().FABLE_TRANSFER_V31 = nil
     end
     return
 end
 
 -- Same game gate used by the working Fable code.
 if tostring(game.GameId) ~= "7436755782" then
-    warn("[FABLE TRANSFER V30] Unsupported game: " .. tostring(game.GameId))
+    warn("[FABLE TRANSFER V31] Unsupported game: " .. tostring(game.GameId))
     if getgenv then
         getgenv().FABLE_TRANSFER_V29 = nil
     end
@@ -290,7 +299,7 @@ okData, DataService = pcall(function()
     return require(ReplicatedStorage.Modules.DataService)
 end)
 if not okData or not DataService then
-    warn("[FABLE TRANSFER V30] Failed to require DataService.")
+    warn("[FABLE TRANSFER V31] Failed to require DataService.")
     if getgenv then
         getgenv().FABLE_TRANSFER_V29 = nil
     end
@@ -301,7 +310,7 @@ okGift, PetGiftingService = pcall(function()
     return require(ReplicatedStorage.Modules.PetServices.PetGiftingService)
 end)
 if not okGift or not PetGiftingService then
-    warn("[FABLE TRANSFER V30] Failed to require PetGiftingService.")
+    warn("[FABLE TRANSFER V31] Failed to require PetGiftingService.")
     if getgenv then
         getgenv().FABLE_TRANSFER_V29 = nil
     end
@@ -313,7 +322,7 @@ end
 ---------------------------------------------------------------------
 
 CONFIG = {
-    TARGET_GIFT_PLAYER = "mysto_sailor",
+    TARGET_GIFT_PLAYER = "mysto_sailor1",
     TARGET_TRADE_PLAYER = "arimabns",
     DEFAULT_EGG = "Night Egg",
 
@@ -366,6 +375,7 @@ CONFIG = {
     PLACE_STAGGER = 0.025,
     TEAM_SETTLE = 0.25,
     GIFT_STAGGER = 0.1,
+    AUTO_GIFT_ACCEPT_INTERVAL = 0.05,
     LOOP_IDLE = 0.15,
 }
 
@@ -380,6 +390,7 @@ State = {
 
     -- V2 UI-connected controls.
     autoGiftEnabled = PersistentTransferConfig.autoGiftEnabled == true,
+    autoGiftAcceptEnabled = true,
     autoPetSlotEnabled = PersistentTransferConfig.autoPetSlotEnabled == true,
     tradePetTeamsEnabled = true,
 
@@ -1398,7 +1409,7 @@ function unequipAllGardenPets()
         task.wait(0.2)
     end
 
-    warn("[FABLE TRANSFER V30] Timeout removing equipped/active garden pets.")
+    warn("[FABLE TRANSFER V31] Timeout removing equipped/active garden pets.")
     return false
 end
 
@@ -1540,7 +1551,7 @@ function equipGardenTeam(team, teamName)
 
         State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
-        warn("[FABLE TRANSFER V30] Timeout equipping " .. tostring(teamName) .. " team.")
+        warn("[FABLE TRANSFER V31] Timeout equipping " .. tostring(teamName) .. " team.")
         return false
     end
 
@@ -1548,7 +1559,7 @@ function equipGardenTeam(team, teamName)
     State.teamEquipBusy = false
 
     if not ok then
-        warn("[FABLE TRANSFER V30] Team equip error:", result)
+        warn("[FABLE TRANSFER V31] Team equip error:", result)
         State.currentGardenTeamName = nil
         State.currentGardenTeam = {}
         return false
@@ -1908,7 +1919,7 @@ function placeNightEggsToMax()
 
     if not ok then
         State.lastStatus = "❌ Egg placement error • " .. tostring(result)
-        warn("[FABLE TRANSFER V30] Egg placement error:", result)
+        warn("[FABLE TRANSFER V31] Egg placement error:", result)
         return false
     end
 
@@ -2004,6 +2015,108 @@ function hatchReadyNightEggs()
     return countReady
 end
 
+-- RAPID INCOMING GIFT ACCEPT
+-- V52-style path: PlayerGui.Gift_Notification -> Frame ->
+-- ImageLabel gift panel -> Holder -> Frame -> Accept.
+-- This watcher intentionally has no per-session/per-gift cap. It keeps
+-- scanning continuously and accepts every visible incoming gift panel.
+---------------------------------------------------------------------
+function clickIncomingGiftAccept(giftPanel)
+    if not giftPanel or not giftPanel:IsA("ImageLabel") then
+        return false
+    end
+
+    local holder = giftPanel:FindFirstChild("Holder")
+    local holderFrame = holder and holder:FindFirstChild("Frame")
+    local accept = holderFrame and holderFrame:FindFirstChild("Accept")
+    if not accept then
+        return false
+    end
+
+    local didClick = false
+
+    if getconnections then
+        pcall(function()
+            for _, connection in pairs(getconnections(accept.MouseButton1Click)) do
+                if connection and connection.Fire then
+                    connection:Fire()
+                    didClick = true
+                end
+            end
+        end)
+
+        if not didClick then
+            pcall(function()
+                for _, connection in pairs(getconnections(accept.Activated)) do
+                    if connection and connection.Fire then
+                        connection:Fire()
+                        didClick = true
+                    end
+                end
+            end)
+        end
+    end
+
+    if not didClick and accept:IsA("GuiButton") then
+        pcall(function()
+            accept:Activate()
+            didClick = true
+        end)
+    end
+
+    return didClick
+end
+
+function autoAcceptAllIncomingGifts()
+    if State.shuttingDown or not State.enabled or not State.autoGiftAcceptEnabled then
+        return 0
+    end
+
+    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then
+        return 0
+    end
+
+    local notif = playerGui:FindFirstChild("Gift_Notification")
+    if not notif or notif.Enabled == false then
+        return 0
+    end
+
+    local frame = notif:FindFirstChild("Frame")
+    if not frame then
+        return 0
+    end
+
+    local accepted = 0
+    for _, giftPanel in ipairs(frame:GetChildren()) do
+        if State.shuttingDown or not State.enabled or not State.autoGiftAcceptEnabled then
+            break
+        end
+
+        if giftPanel:IsA("ImageLabel") then
+            if clickIncomingGiftAccept(giftPanel) then
+                accepted += 1
+            end
+        end
+    end
+
+    if accepted > 0 then
+        State.lastStatus = "🎁 Auto Accept • " .. tostring(accepted) .. " gift(s)"
+    end
+
+    return accepted
+end
+
+Threads.autoGiftAccept = task.spawn(function()
+    while not State.shuttingDown do
+        if State.enabled and State.autoGiftAcceptEnabled then
+            pcall(autoAcceptAllIncomingGifts)
+        end
+        task.wait(CONFIG.AUTO_GIFT_ACCEPT_INTERVAL)
+    end
+end)
+
+---------------------------------------------------------------------
 -- NIGHT EGG PET GIFTING
 ---------------------------------------------------------------------
 
@@ -2290,7 +2403,7 @@ function fastGiftAllNightEggPets()
     end)
 
     if not ok then
-        warn("[FABLE TRANSFER V30] Gift error:", err)
+        warn("[FABLE TRANSFER V31] Gift error:", err)
     end
 
     State.autoGiftBusy = false
@@ -3285,14 +3398,14 @@ okGui, guiErr = pcall(function()
 end)
 
 if not okGui or not ScreenGui then
-    warn("[FABLE TRANSFER V30] GUI creation failed: " .. tostring(guiErr))
+    warn("[FABLE TRANSFER V31] GUI creation failed: " .. tostring(guiErr))
     if getgenv then
         getgenv().FABLE_TRANSFER_V29 = nil
     end
     return
 end
 
-print("[FABLE TRANSFER V30] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent V30 teams.")
+print("[FABLE TRANSFER V31] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent V31 teams.")
 
 Main = Instance.new("Frame")
 Main.Name = "Main"
@@ -4106,7 +4219,7 @@ Varz.StartHatchingSystem = function()
     -- the correct team before progressing.
     task.defer(prepareInitialHatchTeam)
 
-    print("[FABLE TRANSFER V30] Auto Hatch enabled.")
+    print("[FABLE TRANSFER V31] Auto Hatch enabled.")
     return true
 end
 
@@ -4121,7 +4234,7 @@ Varz.StopHatchingSystem = function()
     pcall(transferSavePersistentState)
     v20StatusNow()
 
-    print("[FABLE TRANSFER V30] Auto Hatch stopped.")
+    print("[FABLE TRANSFER V31] Auto Hatch stopped.")
     return true
 end
 
@@ -4489,7 +4602,7 @@ makeGridToggle(settingsContent, halfWidth + gap, 0, halfWidth, "Middle Eggs", CO
 makeGridToggle(settingsContent, 0, 32, halfWidth, "Overdrive Mode", CONFIG.OVERDRIVE, function(v) CONFIG.OVERDRIVE = v end)
 makeGridToggle(settingsContent, halfWidth + gap, 32, halfWidth, "Ultra Mode", CONFIG.ULTRA, function(v) CONFIG.ULTRA = v end)
 
-makeGridToggle(settingsContent, 0, 64, halfWidth, "Rapid Gift → mysto_sailor", true, function(v) State.autoGiftEnabled = v end)
+makeGridToggle(settingsContent, 0, 64, halfWidth, "Rapid Gift → mysto_sailor1", true, function(v) State.autoGiftEnabled = v end)
 tradeTeamsToggle = nil
 tradeTeamsToggle = makeGridToggle(settingsContent, halfWidth + gap, 64, halfWidth, "Trade Pet Teams", true, function(_v)
     State.tradePetTeamsEnabled = true
@@ -4562,7 +4675,7 @@ targetInfo.BackgroundTransparency = 1
 targetInfo.Position = UDim2.fromOffset(4, 226)
 targetInfo.Size = UDim2.new(1, -8, 0, 28)
 targetInfo.Font = Enum.Font.Gotham
-targetInfo.Text = "🎁 Gift: mysto_sailor   •   🎟️ Ticket: arimabns"
+targetInfo.Text = "🎁 Gift: mysto_sailor1   •   🎟️ Ticket: arimabns"
 targetInfo.TextColor3 = Color3.fromRGB(170, 162, 185)
 targetInfo.TextSize = 8
 targetInfo.TextXAlignment = Enum.TextXAlignment.Center
@@ -4668,8 +4781,8 @@ Connections.dragMove = UserInputService.InputChanged:Connect(function(input)
 end)
 
 Connections.close = Close.Activated:Connect(function()
-    if getgenv and getgenv().FABLE_TRANSFER_V30_STOP then
-        pcall(getgenv().FABLE_TRANSFER_V30_STOP)
+    if getgenv and getgenv().FABLE_TRANSFER_V31_STOP then
+        pcall(getgenv().FABLE_TRANSFER_V31_STOP)
     elseif ScreenGui and ScreenGui.Parent then
         ScreenGui:Destroy()
     end
@@ -4834,7 +4947,7 @@ end
 
 -- Expose a cleanup hook for manual unload/re-execution.
 if getgenv then
-    getgenv().FABLE_TRANSFER_V30_STOP = cleanup
+    getgenv().FABLE_TRANSFER_V31_STOP = cleanup
 end
 
 ---------------------------------------------------------------------
@@ -5120,4 +5233,4 @@ else
 end
 statusPush(State.lastStatus)
 updateUI()
-print("[FABLE TRANSFER V30] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent V30 teams.")
+print("[FABLE TRANSFER V31] Loaded — exact V52 HatchPet path, immediate start, always-fill MAX, persistent V31 teams.")
